@@ -1,0 +1,129 @@
+import logging
+from datetime import datetime
+from typing import Any
+
+from config import settings
+from db.database import SessionLocal
+from db.models import EtlRunLog
+from etl.extractors.air_quality import AirQualityExtractor
+from etl.extractors.weather import WeatherExtractor
+from etl.extractors.subway import SubwayExtractor
+from etl.transformers.common import MissingValueInterpolator
+from etl.transformers.region_mapper import RegionMapper
+from etl.transformers.schema_normalizer import (
+    AirQualityNormalizer, WeatherNormalizer, SubwayNormalizer,
+)
+from etl.loaders.db_loader import upsert_records
+
+logger = logging.getLogger(__name__)
+
+
+PIPELINE_CONFIG = {
+    "air_quality": {
+        "extractor_cls": AirQualityExtractor,
+        "api_key_attr": "air_quality_api_key",
+        "normalizer": AirQualityNormalizer(),
+        "interpolator": MissingValueInterpolator(
+            numeric_fields=["pm10", "pm25", "o3", "no2", "co", "so2"]
+        ),
+    },
+    "weather": {
+        "extractor_cls": WeatherExtractor,
+        "api_key_attr": "weather_api_key",
+        "normalizer": WeatherNormalizer(),
+        "interpolator": MissingValueInterpolator(
+            numeric_fields=["temperature", "humidity", "wind_speed", "precipitation"]
+        ),
+    },
+    "subway": {
+        "extractor_cls": SubwayExtractor,
+        "api_key_attr": "subway_api_key",
+        "normalizer": SubwayNormalizer(),
+        "interpolator": MissingValueInterpolator(
+            numeric_fields=["boarding_count", "alighting_count"]
+        ),
+    },
+}
+
+
+def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
+    if sources is None:
+        sources = list(PIPELINE_CONFIG.keys())
+
+    region_mapper = RegionMapper()
+    results = {}
+
+    for source in sources:
+        config = PIPELINE_CONFIG.get(source)
+        if not config:
+            logger.warning(f"Unknown source: {source}")
+            continue
+
+        log = _create_run_log(source)
+        try:
+            # Extract
+            api_key = getattr(settings, config["api_key_attr"], "")
+            extractor = config["extractor_cls"](api_key=api_key)
+
+            if settings.use_mock_data or not api_key:
+                raw_data = extractor.mock_extract()
+                logger.info(f"[{source}] Using mock data ({len(raw_data)} records)")
+            else:
+                raw_data = extractor.extract()
+                logger.info(f"[{source}] Extracted {len(raw_data)} records from API")
+
+            extractor.close()
+
+            # Transform
+            mapped = region_mapper.transform(raw_data)
+            normalized = config["normalizer"].transform(mapped)
+            interpolated = config["interpolator"].transform(normalized)
+
+            # Load
+            loaded_count = upsert_records(source, interpolated)
+
+            _update_run_log(log.id, "success", len(raw_data), loaded_count)
+            results[source] = {
+                "status": "success",
+                "extracted": len(raw_data),
+                "loaded": loaded_count,
+            }
+        except Exception as e:
+            logger.error(f"[{source}] Pipeline failed: {e}")
+            _update_run_log(log.id, "failed", error_message=str(e))
+            results[source] = {"status": "failed", "error": str(e)}
+
+    return results
+
+
+def _create_run_log(source: str) -> EtlRunLog:
+    db = SessionLocal()
+    try:
+        log = EtlRunLog(source=source, started_at=datetime.utcnow(), status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        return log
+    finally:
+        db.close()
+
+
+def _update_run_log(
+    log_id: int,
+    status: str,
+    records_extracted: int = 0,
+    records_loaded: int = 0,
+    error_message: str | None = None,
+):
+    db = SessionLocal()
+    try:
+        log = db.query(EtlRunLog).get(log_id)
+        if log:
+            log.status = status
+            log.finished_at = datetime.utcnow()
+            log.records_extracted = records_extracted
+            log.records_loaded = records_loaded
+            log.error_message = error_message
+            db.commit()
+    finally:
+        db.close()
