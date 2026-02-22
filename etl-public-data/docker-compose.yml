@@ -1,4 +1,4 @@
-version: "3.9"
+version: "3.7"
 
 services:
   postgres:
@@ -26,10 +26,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
     depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
+      - postgres
 
   frontend:
     build: ./frontend
@@ -37,8 +34,6 @@ services:
       - "3000:3000"
     depends_on:
       - backend
-    volumes:
-      - ./frontend/src:/app/src
 
 volumes:
   pgdata:
