@@ -53,6 +53,7 @@
       }
     }
   },
+  "forwardPorts": [3000, 8000],
   "remoteUser": "node",
   "mounts": [
     "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
