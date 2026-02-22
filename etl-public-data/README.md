@@ -9,7 +9,7 @@
 | Backend | Python 3.11, FastAPI, SQLAlchemy, APScheduler |
 | DB | PostgreSQL 15 |
 | Frontend | React 18, Vite, Recharts, React Router |
-| Infra | Docker Compose |
+| Infra | Docker Compose (v1.25.0 이상, 파일 포맷 v3.7) |
 
 ## 빠른 시작
 
@@ -26,6 +26,9 @@ cp .env.example .env
 ```bash
 docker-compose up --build
 ```
+
+> **참고**: devcontainer 환경에서는 `sudo docker-compose up --build`로 실행하세요.
+> 코드 변경 후 반영하려면 `--build` 옵션을 붙여 다시 실행해야 합니다 (bind mount 미사용).
 
 3개 서비스가 기동됩니다:
 
