@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from etl.base import BaseTransformer
@@ -13,7 +13,7 @@ class AirQualityNormalizer(BaseTransformer):
             try:
                 measured_at = datetime.strptime(r.get("dataTime", ""), "%Y-%m-%d %H:%M")
             except (ValueError, TypeError):
-                measured_at = datetime.utcnow()
+                measured_at = datetime.utcnow() + timedelta(hours=9)
 
             grade_map = {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}
             normalized.append({
@@ -44,7 +44,7 @@ class WeatherNormalizer(BaseTransformer):
                     f"{r.get('fcstDate', '')} {r.get('fcstTime', '0000')}", "%Y%m%d %H%M"
                 )
             except (ValueError, TypeError):
-                forecast_date = datetime.utcnow()
+                forecast_date = datetime.utcnow() + timedelta(hours=9)
 
             pcp = r.get("PCP", "강수없음")
             precipitation = 0.0
@@ -73,16 +73,16 @@ class SubwayNormalizer(BaseTransformer):
         normalized = []
         for r in records:
             try:
-                use_date = datetime.strptime(str(r.get("USE_DT", "")), "%Y%m%d")
+                use_date = datetime.strptime(str(r.get("USE_YMD", r.get("USE_DT", ""))), "%Y%m%d")
             except (ValueError, TypeError):
-                use_date = datetime.utcnow()
+                use_date = datetime.utcnow() + timedelta(hours=9)
 
             normalized.append({
-                "station_name": r.get("SUB_STA_NM", ""),
-                "line": r.get("LINE_NUM", ""),
+                "station_name": r.get("SBWY_STNS_NM", r.get("SUB_STA_NM", "")),
+                "line": r.get("SBWY_ROUT_LN_NM", r.get("LINE_NUM", "")),
                 "use_date": use_date,
-                "boarding_count": _safe_int(r.get("RIDE_PASGR_NUM")),
-                "alighting_count": _safe_int(r.get("ALIGHT_PASGR_NUM")),
+                "boarding_count": _safe_int(r.get("GTON_TNOPE", r.get("RIDE_PASGR_NUM"))),
+                "alighting_count": _safe_int(r.get("GTOFF_TNOPE", r.get("ALIGHT_PASGR_NUM"))),
             })
         return normalized
 

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from config import settings
@@ -99,7 +99,7 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
 def _create_run_log(source: str) -> EtlRunLog:
     db = SessionLocal()
     try:
-        log = EtlRunLog(source=source, started_at=datetime.utcnow(), status="running")
+        log = EtlRunLog(source=source, started_at=datetime.utcnow() + timedelta(hours=9), status="running")
         db.add(log)
         db.commit()
         db.refresh(log)
@@ -120,7 +120,7 @@ def _update_run_log(
         log = db.query(EtlRunLog).get(log_id)
         if log:
             log.status = status
-            log.finished_at = datetime.utcnow()
+            log.finished_at = datetime.utcnow() + timedelta(hours=9)
             log.records_extracted = records_extracted
             log.records_loaded = records_loaded
             log.error_message = error_message

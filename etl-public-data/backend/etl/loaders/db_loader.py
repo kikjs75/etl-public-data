@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Type
 
 from sqlalchemy.dialects.postgresql import insert
@@ -34,7 +34,7 @@ def upsert_records(source: str, records: list[dict[str, Any]]) -> int:
     db: Session = SessionLocal()
     try:
         for record in records:
-            record["collected_at"] = datetime.utcnow()
+            record["collected_at"] = datetime.utcnow() + timedelta(hours=9)
             stmt = insert(model).values(**record)
             update_cols = {k: v for k, v in record.items() if k not in conflict_cols and k != "id"}
             stmt = stmt.on_conflict_do_update(

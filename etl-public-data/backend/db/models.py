@@ -1,4 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+
+
+def _kst_now():
+    return datetime.utcnow() + timedelta(hours=9)
 
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint,
@@ -20,7 +24,7 @@ class AirQuality(Base):
     co = Column(Float)
     so2 = Column(Float)
     grade = Column(String(20))
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=_kst_now)
 
     __table_args__ = (
         UniqueConstraint("station_name", "measured_at", name="uq_air_station_time"),
@@ -38,7 +42,7 @@ class Weather(Base):
     wind_speed = Column(Float)
     precipitation = Column(Float)
     sky_condition = Column(String(50))
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=_kst_now)
 
     __table_args__ = (
         UniqueConstraint("region", "forecast_date", name="uq_weather_region_date"),
@@ -54,7 +58,7 @@ class Subway(Base):
     use_date = Column(DateTime, nullable=False)
     boarding_count = Column(Integer)
     alighting_count = Column(Integer)
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=_kst_now)
 
     __table_args__ = (
         UniqueConstraint("station_name", "line", "use_date", name="uq_subway_station_line_date"),
@@ -87,7 +91,7 @@ class QualityReport(Base):
     null_rate = Column(Float, default=0.0)
     overall_score = Column(Float, default=0.0)
     details = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_kst_now)
 
 
 class SchemaVersion(Base):
@@ -96,4 +100,4 @@ class SchemaVersion(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     version = Column(Integer, nullable=False, unique=True)
     description = Column(String(255))
-    applied_at = Column(DateTime, default=datetime.utcnow)
+    applied_at = Column(DateTime, default=_kst_now)

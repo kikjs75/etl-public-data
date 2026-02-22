@@ -46,7 +46,7 @@ NULLABLE_FIELDS = {
 
 def check_quality(source: str, target_date: datetime | None = None) -> dict[str, Any]:
     if target_date is None:
-        target_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        target_date = (datetime.utcnow() + timedelta(hours=9)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     next_day = target_date + timedelta(days=1)
     model = MODEL_MAP.get(source)

@@ -13,8 +13,8 @@ class SubwayExtractor(BaseExtractor):
         return "subway"
 
     def extract(self) -> list[dict[str, Any]]:
-        yesterday = (datetime.utcnow() + timedelta(hours=9) - timedelta(days=1)).strftime("%Y%m%d")
-        url = f"{self.BASE_URL}/{self.api_key}/json/CardSubwayStatsNew/1/1000/{yesterday}"
+        target = (datetime.utcnow() + timedelta(hours=9) - timedelta(days=60)).strftime("%Y%m%d")
+        url = f"{self.BASE_URL}/{self.api_key}/json/CardSubwayStatsNew/1/1000/{target}"
         data = self.fetch(url)
         rows = data.get("CardSubwayStatsNew", {}).get("row", [])
         return rows if isinstance(rows, list) else []

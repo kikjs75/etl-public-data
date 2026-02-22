@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,7 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 def generate_report(target_date: datetime | None = None) -> dict[str, str]:
     if target_date is None:
-        target_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        target_date = (datetime.utcnow() + timedelta(hours=9)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     results = run_all_quality_checks(target_date)
 
@@ -29,7 +29,7 @@ def _render_html(target_date: datetime, results: list[dict[str, Any]]) -> str:
     template = env.get_template("report.html")
     return template.render(
         report_date=target_date.strftime("%Y-%m-%d"),
-        generated_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        generated_at=(datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S KST"),
         results=results,
     )
 
@@ -37,7 +37,7 @@ def _render_html(target_date: datetime, results: list[dict[str, Any]]) -> str:
 def _render_markdown(target_date: datetime, results: list[dict[str, Any]]) -> str:
     lines = [
         f"# 데이터 품질 리포트 - {target_date.strftime('%Y-%m-%d')}",
-        f"생성 시각: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"생성 시각: {(datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S KST')}",
         "",
         "## 요약",
         "",

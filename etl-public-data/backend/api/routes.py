@@ -37,7 +37,7 @@ def get_dashboard(db: Session = Depends(get_db)):
     # Daily collection counts for the last 7 days
     daily_counts = []
     for i in range(7):
-        day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
+        day = (datetime.utcnow() + timedelta(hours=9)).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
         next_day = day + timedelta(days=1)
         counts = {}
         for source, model in SOURCE_MODELS.items():
