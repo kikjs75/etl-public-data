@@ -167,6 +167,16 @@ main.py
 
 ```python
 # 로깅 초기화 (앱 최상단)
+
+# 표준 LogRecord 속성 집합 — extra={} 순회 시 제외 대상
+_STDLIB_ATTRS = frozenset({
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "thread", "threadName", "taskName",
+    "run_id",   # RunIdFilter가 주입하는 커스텀 필드 (명시적으로 처리)
+})
+
 class RunIdFilter(logging.Filter):
     def filter(self, record):
         record.run_id = run_id_var.get()  # ContextVar에서 run_id 읽어 레코드에 주입
@@ -180,6 +190,9 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         log_record["logger"]  = record.name
         log_record["run_id"]  = getattr(record, "run_id", "-")
         log_record["service"] = "etl-backend"
+        for key, value in record.__dict__.items():   # extra={} 필드를 JSON 최상위 키로 포함
+            if key not in _STDLIB_ATTRS and key not in log_record:
+                log_record[key] = value
         if record.exc_info:
             log_record["traceback"] = self.formatException(record.exc_info)
             record.exc_info = None   # JSON에 traceback 필드로 직렬화 후 중복 방지
@@ -319,9 +332,13 @@ def mock_extract(self) -> list[dict]:  # 테스트용 Mock 데이터
 def fetch(url, params):
     # max_retries(기본 3)회 재시도
     # 각 시도마다 t0 = perf_counter() 로 duration_ms 측정
-    # 성공: log INFO  "[source] HTTP GET success attempt=N duration_ms=N"
-    # 중간 실패: log WARNING error_type=X error_msg='...' retry_exhausted=false
-    # 최종 실패: log ERROR   error_type=X error_msg='...' retry_exhausted=true (exc_info=True)
+    # 성공: log INFO  "[source] HTTP GET success"  extra={attempt=N, duration_ms=N}
+    # 중간 실패: log WARNING "[source] Fetch attempt failed"
+    #           extra={error_type=X, error_msg='...', attempt=N, max_retries=N,
+    #                  retry_exhausted=False, duration_ms=N}
+    # 최종 실패: log ERROR "[source] Fetch retry exhausted"
+    #           extra={error_type=X, error_msg='...', attempt=N, max_retries=N,
+    #                  retry_exhausted=True, duration_ms=N}  exc_info=True
     # 실패 시 2^n초 대기 (exponential backoff)
     # 최종 실패 후 RuntimeError raise
     # 성공 시 응답 후 rate_limit_delay(기본 1초) 대기
@@ -359,21 +376,21 @@ PIPELINE_CONFIG = {
    t_total = perf_counter()         # 전체 소요시간 측정 시작
 3. API 키 가져오기 (settings에서)
 4. t0 = perf_counter()
-   use_mock_data=true → mock_extract(), false → extract()
-   log: "[source] Extract complete rows=N duration_ms=N"
+   use_mock_data=true → mock_extract()  log INFO "[source] Using mock data"    extra={rows=N, duration_ms=N, mock=True}
+   use_mock_data=false → extract()      log INFO "[source] Extract complete"   extra={rows=N, duration_ms=N}
 5. t0 = perf_counter()
    region_mapper.transform(raw_data)
    normalizer.transform(mapped)
    interpolator.transform(normalized)
-   log: "[source] Transform complete rows=N duration_ms=N"
+   log INFO "[source] Transform complete"  extra={rows=N, duration_ms=N}
 6. t0 = perf_counter()
    upsert_records(source, interpolated)
-   log: "[source] Load complete rows=N duration_ms=N"
+   log INFO "[source] Load complete"       extra={rows=N, duration_ms=N}
 7. _update_run_log(log_id, "success", extracted, loaded)
-   log: "[source] Pipeline complete extracted=N loaded=N duration_ms=N"
+   log INFO "[source] Pipeline complete"   extra={extracted=N, loaded=N, duration_ms=N}
    └─ 실패 시: _update_run_log(log_id, "failed", error_message=...)
-              log ERROR: "[source] Pipeline failed
-                          error_type=X error_msg='...' duration_ms=N"  exc_info=True
+              log ERROR "[source] Pipeline failed"
+                        extra={error_type=X, error_msg='...', duration_ms=N}  exc_info=True
 
 # _ms(t_start) 헬퍼
 int((time.perf_counter() - t_start) * 1000)  # float초 → int밀리초
@@ -823,9 +840,11 @@ cron 형식 예시:
 
 ### 로그 포맷 (JSON)
 
-모든 로그는 `python-json-logger`의 `CustomJsonFormatter`를 통해 JSON으로 출력됩니다. 로거 호출 코드는 변경 없이 포맷터 교체만으로 JSON 전환이 이루어집니다.
+모든 로그는 `python-json-logger`의 `CustomJsonFormatter`를 통해 JSON으로 출력됩니다. `logger.info("...", extra={...})` 형태로 전달한 필드는 `record.__dict__` 순회를 통해 JSON 최상위 키로 자동 포함됩니다.
 
 #### JSON 필드 구조
+
+**고정 필드** (모든 로그에 항상 포함):
 
 | 필드 | 출처 | 설명 |
 |------|------|------|
@@ -834,27 +853,41 @@ cron 형식 예시:
 | `logger` | `record.name` | 로거 계층 (예: `etl.pipeline`) |
 | `run_id` | `ContextVar` | ETL 소스 실행 단위 추적 ID (8자리 hex), 외부는 `"-"` |
 | `service` | 고정값 | `"etl-backend"` |
-| `message` | 로그 메시지 | 기존 f-string 메시지 그대로 |
-| `traceback` | `formatException()` | ERROR 로그에만 추가, 원본 exc_info 제거로 중복 방지 |
+| `message` | 로그 메시지 문자열 | `logger.info("...")` 의 첫 번째 인수 |
+
+**extra 필드** (로그 종류별 추가):
+
+| 필드 | 타입 | 포함 로그 | 설명 |
+|------|------|----------|------|
+| `rows` | int | Extract/Transform/Load/Upsert | 처리 레코드 수 |
+| `extracted` / `loaded` | int | Pipeline complete | 추출/적재 레코드 수 |
+| `duration_ms` | int | 모든 단계 | 단계별 소요시간(ms) |
+| `attempt` | int | HTTP 요청 | 현재 시도 번호 |
+| `max_retries` | int | HTTP 재시도 | 최대 재시도 횟수 |
+| `error_type` | str | ERROR / WARNING | `type(e).__name__` |
+| `error_msg` | str | ERROR / WARNING | `str(e)` |
+| `retry_exhausted` | bool | HTTP 재시도 | 중간 실패 `False` / 최종 실패 `True` |
+| `mock` | bool | mock 데이터 수집 시 | `True` 고정 |
+| `traceback` | str | ERROR | 스택 트레이스 (exc_info → JSON 직렬화) |
 
 #### 예시 — 정상 흐름:
 ```json
-{"message": "[air_quality] Extract complete rows=40 duration_ms=312", "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] HTTP GET success attempt=1 duration_ms=287", "timestamp": "2026-03-04T10:30:00.435+09:00", "level": "INFO", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Transform complete rows=40 duration_ms=5", "timestamp": "2026-03-04T10:30:00.440+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Load complete rows=40 duration_ms=88", "timestamp": "2026-03-04T10:30:00.528+09:00", "level": "INFO", "logger": "etl.loaders.db_loader", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Pipeline complete extracted=40 loaded=40 duration_ms=406", "timestamp": "2026-03-04T10:30:00.529+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] HTTP GET success", "attempt": 1, "duration_ms": 287, "timestamp": "2026-03-04T10:30:00.435+09:00", "level": "INFO", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Transform complete", "rows": 40, "duration_ms": 5, "timestamp": "2026-03-04T10:30:00.440+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Load complete", "rows": 40, "duration_ms": 88, "timestamp": "2026-03-04T10:30:00.528+09:00", "level": "INFO", "logger": "etl.loaders.db_loader", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Pipeline complete", "extracted": 40, "loaded": 40, "duration_ms": 406, "timestamp": "2026-03-04T10:30:00.529+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
 ```
 
 #### 예시 — 재시도 후 최종 실패:
 ```json
-{"message": "[air_quality] Fetch attempt 1/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false", "timestamp": "2026-03-04T10:30:00.100+09:00", "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Fetch attempt 2/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false", "timestamp": "2026-03-04T10:30:02.200+09:00", "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Fetch retry exhausted error_type=TimeoutError ... retry_exhausted=true duration_ms=5000", "timestamp": "2026-03-04T10:30:06.400+09:00", "level": "ERROR", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
-{"message": "[air_quality] Pipeline failed error_type=RuntimeError error_msg='...' duration_ms=16301", "timestamp": "2026-03-04T10:30:06.401+09:00", "level": "ERROR", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
+{"message": "[air_quality] Fetch attempt failed", "error_type": "TimeoutError", "error_msg": "read timeout", "attempt": 1, "max_retries": 3, "retry_exhausted": false, "duration_ms": 5000, "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Fetch attempt failed", "error_type": "TimeoutError", "error_msg": "read timeout", "attempt": 2, "max_retries": 3, "retry_exhausted": false, "duration_ms": 5000, "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Fetch retry exhausted", "error_type": "TimeoutError", "error_msg": "read timeout", "attempt": 3, "max_retries": 3, "retry_exhausted": true, "duration_ms": 5000, "level": "ERROR", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
+{"message": "[air_quality] Pipeline failed", "error_type": "RuntimeError", "error_msg": "All 3 attempts failed", "duration_ms": 16301, "level": "ERROR", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
 ```
 
-> **ELK 연동 시 장점:** JSON 한 줄 = 로그 이벤트 1개. Filebeat가 파싱 없이 Elasticsearch로 전송 가능. `run_id`, `level`, `logger`, `service` 필드로 Kibana 필터/대시보드 즉시 구성 가능.
+> **ELK 연동 시 장점:** `duration_ms > 500`, `error_type: TimeoutError`, `retry_exhausted: true` 같은 조건을 Kibana에서 필드 직접 필터로 사용 가능. 메시지 파싱 없이 집계/시각화 즉시 구성 가능.
 
 ### run_id 전파 흐름
 
@@ -882,22 +915,22 @@ pipeline.py: run_id_var.set("a1b2c3d4")
 
 ### 에러 로그 표준화 필드
 
-모든 ERROR / WARNING 에러 로그는 아래 필드를 포함합니다.
+모든 ERROR / WARNING 에러 로그는 `extra={}` 방식으로 아래 필드를 포함합니다. (JSON 최상위 키로 분리)
 
-| 필드 | 예시 | 설명 |
-|------|------|------|
-| `error_type` | `error_type=TimeoutError` | `type(e).__name__` — 예외 클래스명 |
-| `error_msg` | `error_msg='read timeout'` | `str(e)!r` — 따옴표로 감싸 공백/특수문자 보호 |
-| `exc_info` | _(스택 트레이스 자동 첨부)_ | `exc_info=True` — ERROR 로그에만 첨부 |
+| 필드 | 타입 | 예시 값 | 설명 |
+|------|------|---------|------|
+| `error_type` | str | `"TimeoutError"` | `type(e).__name__` — 예외 클래스명 |
+| `error_msg` | str | `"read timeout"` | `str(e)` — JSON 네이티브 문자열 |
+| `traceback` | str | `"Traceback ..."` | ERROR 로그에만 포함, exc_info → JSON 직렬화 |
 
 #### 재시도 추가 필드 (`etl/base.py` fetch)
 
-| 필드 | 값 | 조건 |
-|------|----|------|
-| `retry_exhausted` | `false` | 중간 재시도 (WARNING) |
-| `retry_exhausted` | `true` | 최종 실패 (ERROR) |
-| `attempt` | `3` | 실패한 시도 번호 |
-| `max_retries` | `3` | 최대 재시도 횟수 |
+| 필드 | 타입 | 값 | 조건 |
+|------|------|----|------|
+| `retry_exhausted` | bool | `false` | 중간 재시도 (WARNING) |
+| `retry_exhausted` | bool | `true` | 최종 실패 (ERROR) |
+| `attempt` | int | `3` | 실패한 시도 번호 |
+| `max_retries` | int | `3` | 최대 재시도 횟수 |
 
 #### 재시도 로그 레벨 정책
 

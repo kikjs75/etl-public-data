@@ -117,11 +117,13 @@ etl-public-data/
 
 ## 로깅 구조
 
-모든 백엔드 로그는 JSON 형식으로 출력됩니다 (`python-json-logger` 사용).
+모든 백엔드 로그는 JSON 형식으로 출력됩니다 (`python-json-logger` 사용). `extra={}` 로 전달한 필드는 JSON 최상위 키로 분리됩니다.
 
 ```json
-{"message": "[air_quality] Extract complete rows=40 duration_ms=312", "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
 ```
+
+**고정 필드** (모든 로그):
 
 | 필드 | 포함 위치 | 설명 |
 | ---- | --------- | ---- |
@@ -130,15 +132,21 @@ etl-public-data/
 | `logger` | 전체 로그 | 로거 계층 (예: `etl.pipeline`) |
 | `run_id` | 전체 로그 | ETL 소스 실행 단위 추적 ID (8자리 hex). 파이프라인 외부는 `-` |
 | `service` | 전체 로그 | 고정값 `"etl-backend"` |
-| `duration_ms` | 전체 로그 | 단계별 소요시간(ms). Extract / Transform / Load / 전체 / HTTP 요청별 |
+
+**extra 필드** (로그 종류별):
+
+| 필드 | 포함 위치 | 설명 |
+| ---- | --------- | ---- |
+| `rows` | Extract / Transform / Load | 처리 레코드 수 |
+| `duration_ms` | 모든 단계 | 단계별 소요시간(ms) |
 | `error_type` | ERROR / WARNING | 예외 클래스명 (`type(e).__name__`) |
-| `error_msg` | ERROR / WARNING | 예외 메시지 (따옴표로 감싸 특수문자 보호) |
+| `error_msg` | ERROR / WARNING | 예외 메시지 (`str(e)`, JSON 네이티브 문자열) |
 | `traceback` | ERROR | 스택 트레이스 (JSON 필드로 직렬화) |
-| `retry_exhausted` | HTTP 재시도 로그 | 중간 실패 `false` (WARNING) / 최종 실패 `true` (ERROR) |
+| `retry_exhausted` | HTTP 재시도 로그 | 중간 실패 `false` / 최종 실패 `true` (bool) |
 
 - `etl/context.py`의 `ContextVar`로 스레드별 run_id를 관리하므로 동시 실행 시에도 섞이지 않음
 - `main.py`의 `RunIdFilter`가 루트 핸들러에 등록되어 모든 레이어(`etl.base`, `etl.loaders.db_loader` 등)에 자동 주입
-- ERROR 로그의 스택 트레이스는 `traceback` JSON 필드로 직렬화됨 (Filebeat/ELK 파싱 편의)
+- Kibana에서 `duration_ms`, `error_type`, `retry_exhausted` 등을 필드 직접 필터/집계로 활용 가능
 
 로깅 검증 테스트 실행:
 
