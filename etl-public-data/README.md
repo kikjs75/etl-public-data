@@ -123,13 +123,17 @@ etl-public-data/
 2026-03-04 10:30:00,123 [INFO] etl.pipeline run_id=a1b2c3d4: [air_quality] Extract complete rows=40 duration_ms=312
 ```
 
-| 필드 | 설명 |
-| ---- | ---- |
-| `run_id` | ETL 소스 실행 단위 추적 ID (8자리 hex). 파이프라인 외부 로그는 `-` |
-| `duration_ms` | 단계별 소요시간(ms). Extract / Transform / Load / 전체 / HTTP 요청별 측정 |
+| 필드 | 포함 위치 | 설명 |
+| ---- | --------- | ---- |
+| `run_id` | 전체 로그 | ETL 소스 실행 단위 추적 ID (8자리 hex). 파이프라인 외부는 `-` |
+| `duration_ms` | 전체 로그 | 단계별 소요시간(ms). Extract / Transform / Load / 전체 / HTTP 요청별 |
+| `error_type` | ERROR / WARNING | 예외 클래스명 (`type(e).__name__`) |
+| `error_msg` | ERROR / WARNING | 예외 메시지 (따옴표로 감싸 특수문자 보호) |
+| `retry_exhausted` | HTTP 재시도 로그 | 중간 실패 `false` (WARNING) / 최종 실패 `true` (ERROR + 스택 트레이스) |
 
 - `etl/context.py`의 `ContextVar`로 스레드별 run_id를 관리하므로 동시 실행 시에도 섞이지 않음
 - `main.py`의 `RunIdFilter`가 루트 핸들러에 등록되어 모든 레이어(`etl.base`, `etl.loaders.db_loader` 등)에 자동 주입
+- ERROR 로그에는 `exc_info=True`로 스택 트레이스가 자동 첨부됨
 
 로깅 검증 테스트 실행:
 
