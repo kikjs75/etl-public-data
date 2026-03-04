@@ -24,6 +24,7 @@
 | DB | PostgreSQL 15 + SQLAlchemy ORM |
 | 스케줄링 | APScheduler (cron 기반) |
 | HTTP 클라이언트 | httpx (재시도 지원) |
+| 구조화 로깅 | python-json-logger (JSON 포맷, ELK 연동 대비) |
 | 리포트 템플릿 | Jinja2 (HTML/Markdown) |
 | 인프라 | Docker Compose |
 
@@ -63,7 +64,7 @@ backend/
 ├── catalog/
 │   └── lineage.py                   # 데이터 카탈로그 + 리니지 정의
 └── tests/
-    └── test_run_id_logging.py       # 로깅 동작 검증 테스트 (run_id + duration_ms)
+    └── test_run_id_logging.py       # 로깅 동작 검증 테스트 (run_id + duration_ms + JSON 포맷, 16개)
 ```
 
 ### 의존성 관계도
@@ -171,9 +172,23 @@ class RunIdFilter(logging.Filter):
         record.run_id = run_id_var.get()  # ContextVar에서 run_id 읽어 레코드에 주입
         return True
 
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s")
-for handler in logging.getLogger().handlers:
-    handler.addFilter(RunIdFilter())  # 루트 핸들러에 등록 → 모든 자식 로거에 자동 전파
+class CustomJsonFormatter(jsonlogger.JsonFormatter):
+    def add_fields(self, log_record, record, message_dict):
+        super().add_fields(log_record, record, message_dict)
+        log_record["timestamp"] = datetime.now(KST).isoformat(timespec="milliseconds")
+        log_record["level"]   = record.levelname
+        log_record["logger"]  = record.name
+        log_record["run_id"]  = getattr(record, "run_id", "-")
+        log_record["service"] = "etl-backend"
+        if record.exc_info:
+            log_record["traceback"] = self.formatException(record.exc_info)
+            record.exc_info = None   # JSON에 traceback 필드로 직렬화 후 중복 방지
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(CustomJsonFormatter())
+_handler.addFilter(RunIdFilter())  # 루트 핸들러에 등록 → 모든 자식 로거에 자동 전파
+logging.getLogger().setLevel(logging.INFO)
+logging.getLogger().addHandler(_handler)
 
 # lifespan: 앱 시작 시 실행
 1. run_migrations()      # 스키마 자동 생성/업그레이드
@@ -806,30 +821,40 @@ cron 형식 예시:
 
 ## 8. 로깅 구조
 
-### 로그 포맷
+### 로그 포맷 (JSON)
 
-```
-%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s
+모든 로그는 `python-json-logger`의 `CustomJsonFormatter`를 통해 JSON으로 출력됩니다. 로거 호출 코드는 변경 없이 포맷터 교체만으로 JSON 전환이 이루어집니다.
+
+#### JSON 필드 구조
+
+| 필드 | 출처 | 설명 |
+|------|------|------|
+| `timestamp` | `datetime.now(KST).isoformat()` | KST 기준 ISO 8601 (밀리초까지) |
+| `level` | `record.levelname` | INFO / WARNING / ERROR |
+| `logger` | `record.name` | 로거 계층 (예: `etl.pipeline`) |
+| `run_id` | `ContextVar` | ETL 소스 실행 단위 추적 ID (8자리 hex), 외부는 `"-"` |
+| `service` | 고정값 | `"etl-backend"` |
+| `message` | 로그 메시지 | 기존 f-string 메시지 그대로 |
+| `traceback` | `formatException()` | ERROR 로그에만 추가, 원본 exc_info 제거로 중복 방지 |
+
+#### 예시 — 정상 흐름:
+```json
+{"message": "[air_quality] Extract complete rows=40 duration_ms=312", "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] HTTP GET success attempt=1 duration_ms=287", "timestamp": "2026-03-04T10:30:00.435+09:00", "level": "INFO", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Transform complete rows=40 duration_ms=5", "timestamp": "2026-03-04T10:30:00.440+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Load complete rows=40 duration_ms=88", "timestamp": "2026-03-04T10:30:00.528+09:00", "level": "INFO", "logger": "etl.loaders.db_loader", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Pipeline complete extracted=40 loaded=40 duration_ms=406", "timestamp": "2026-03-04T10:30:00.529+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
 ```
 
-예시 — 정상 흐름:
-```
-2026-03-04 10:30:00,123 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Extract complete rows=40 duration_ms=312
-2026-03-04 10:30:00,435 [INFO]    etl.base              run_id=a1b2c3d4: [air_quality] HTTP GET success attempt=1 duration_ms=287
-2026-03-04 10:30:00,440 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Transform complete rows=40 duration_ms=5
-2026-03-04 10:30:00,528 [INFO]    etl.loaders.db_loader run_id=a1b2c3d4: [air_quality] Load complete rows=40 duration_ms=88
-2026-03-04 10:30:00,529 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Pipeline complete extracted=40 loaded=40 duration_ms=406
+#### 예시 — 재시도 후 최종 실패:
+```json
+{"message": "[air_quality] Fetch attempt 1/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false", "timestamp": "2026-03-04T10:30:00.100+09:00", "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Fetch attempt 2/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false", "timestamp": "2026-03-04T10:30:02.200+09:00", "level": "WARNING", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Fetch retry exhausted error_type=TimeoutError ... retry_exhausted=true duration_ms=5000", "timestamp": "2026-03-04T10:30:06.400+09:00", "level": "ERROR", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
+{"message": "[air_quality] Pipeline failed error_type=RuntimeError error_msg='...' duration_ms=16301", "timestamp": "2026-03-04T10:30:06.401+09:00", "level": "ERROR", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend", "traceback": "Traceback (most recent call last): ..."}
 ```
 
-예시 — 재시도 후 최종 실패:
-```
-2026-03-04 10:30:00,100 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Fetch attempt 1/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false
-2026-03-04 10:30:02,200 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Fetch attempt 2/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false
-2026-03-04 10:30:06,400 [ERROR]   etl.base              run_id=a1b2c3d4: [air_quality] Fetch retry exhausted error_type=TimeoutError error_msg='read timeout' attempt=3 max_retries=3 retry_exhausted=true duration_ms=5000
-Traceback (most recent call last): ...
-2026-03-04 10:30:06,401 [ERROR]   etl.pipeline          run_id=a1b2c3d4: [air_quality] Pipeline failed error_type=RuntimeError error_msg='All 3 attempts failed: ...' duration_ms=16301
-Traceback (most recent call last): ...
-```
+> **ELK 연동 시 장점:** JSON 한 줄 = 로그 이벤트 1개. Filebeat가 파싱 없이 Elasticsearch로 전송 가능. `run_id`, `level`, `logger`, `service` 필드로 Kibana 필터/대시보드 즉시 구성 가능.
 
 ### run_id 전파 흐름
 
