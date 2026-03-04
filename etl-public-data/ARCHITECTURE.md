@@ -305,9 +305,10 @@ def fetch(url, params):
     # max_retries(기본 3)회 재시도
     # 각 시도마다 t0 = perf_counter() 로 duration_ms 측정
     # 성공: log INFO  "[source] HTTP GET success attempt=N duration_ms=N"
-    # 실패: log WARNING "[source] Attempt N failed: {e} duration_ms=N"
+    # 중간 실패: log WARNING error_type=X error_msg='...' retry_exhausted=false
+    # 최종 실패: log ERROR   error_type=X error_msg='...' retry_exhausted=true (exc_info=True)
     # 실패 시 2^n초 대기 (exponential backoff)
-    # 최종 실패 시 RuntimeError
+    # 최종 실패 후 RuntimeError raise
     # 성공 시 응답 후 rate_limit_delay(기본 1초) 대기
 ```
 
@@ -356,7 +357,8 @@ PIPELINE_CONFIG = {
 7. _update_run_log(log_id, "success", extracted, loaded)
    log: "[source] Pipeline complete extracted=N loaded=N duration_ms=N"
    └─ 실패 시: _update_run_log(log_id, "failed", error_message=...)
-              log: "[source] Pipeline failed: {e} duration_ms=N"
+              log ERROR: "[source] Pipeline failed
+                          error_type=X error_msg='...' duration_ms=N"  exc_info=True
 
 # _ms(t_start) 헬퍼
 int((time.perf_counter() - t_start) * 1000)  # float초 → int밀리초
@@ -810,13 +812,23 @@ cron 형식 예시:
 %(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s
 ```
 
-예시:
+예시 — 정상 흐름:
 ```
 2026-03-04 10:30:00,123 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Extract complete rows=40 duration_ms=312
-2026-03-04 10:30:00,435 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Attempt 1 failed: timeout duration_ms=5000
+2026-03-04 10:30:00,435 [INFO]    etl.base              run_id=a1b2c3d4: [air_quality] HTTP GET success attempt=1 duration_ms=287
 2026-03-04 10:30:00,440 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Transform complete rows=40 duration_ms=5
 2026-03-04 10:30:00,528 [INFO]    etl.loaders.db_loader run_id=a1b2c3d4: [air_quality] Load complete rows=40 duration_ms=88
 2026-03-04 10:30:00,529 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Pipeline complete extracted=40 loaded=40 duration_ms=406
+```
+
+예시 — 재시도 후 최종 실패:
+```
+2026-03-04 10:30:00,100 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Fetch attempt 1/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false
+2026-03-04 10:30:02,200 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Fetch attempt 2/3 failed error_type=TimeoutError error_msg='read timeout' duration_ms=5000 retry_exhausted=false
+2026-03-04 10:30:06,400 [ERROR]   etl.base              run_id=a1b2c3d4: [air_quality] Fetch retry exhausted error_type=TimeoutError error_msg='read timeout' attempt=3 max_retries=3 retry_exhausted=true duration_ms=5000
+Traceback (most recent call last): ...
+2026-03-04 10:30:06,401 [ERROR]   etl.pipeline          run_id=a1b2c3d4: [air_quality] Pipeline failed error_type=RuntimeError error_msg='All 3 attempts failed: ...' duration_ms=16301
+Traceback (most recent call last): ...
 ```
 
 ### run_id 전파 흐름
@@ -841,7 +853,36 @@ pipeline.py: run_id_var.set("a1b2c3d4")
 | `etl/pipeline.py` Load | DB upsert 전체 | INFO |
 | `etl/pipeline.py` 전체 | 소스 1개 파이프라인 합산 | INFO |
 | `etl/pipeline.py` 실패 | 실패 시점까지 합산 | ERROR |
-| `etl/base.py` fetch | HTTP 요청 1회 (재시도별) | INFO/WARNING |
+| `etl/base.py` fetch | HTTP 요청 1회 (재시도별) | INFO / WARNING / ERROR |
+
+### 에러 로그 표준화 필드
+
+모든 ERROR / WARNING 에러 로그는 아래 필드를 포함합니다.
+
+| 필드 | 예시 | 설명 |
+|------|------|------|
+| `error_type` | `error_type=TimeoutError` | `type(e).__name__` — 예외 클래스명 |
+| `error_msg` | `error_msg='read timeout'` | `str(e)!r` — 따옴표로 감싸 공백/특수문자 보호 |
+| `exc_info` | _(스택 트레이스 자동 첨부)_ | `exc_info=True` — ERROR 로그에만 첨부 |
+
+#### 재시도 추가 필드 (`etl/base.py` fetch)
+
+| 필드 | 값 | 조건 |
+|------|----|------|
+| `retry_exhausted` | `false` | 중간 재시도 (WARNING) |
+| `retry_exhausted` | `true` | 최종 실패 (ERROR) |
+| `attempt` | `3` | 실패한 시도 번호 |
+| `max_retries` | `3` | 최대 재시도 횟수 |
+
+#### 재시도 로그 레벨 정책
+
+```
+attempt 1/3 실패 → WARNING  retry_exhausted=false  exc_info 없음
+attempt 2/3 실패 → WARNING  retry_exhausted=false  exc_info 없음
+attempt 3/3 실패 → ERROR    retry_exhausted=true   exc_info=True (스택 첨부)
+```
+
+중간 재시도에 exc_info를 붙이지 않는 이유: 예상된 일시적 실패이므로 스택 트레이스가 불필요하고 로그 볼륨을 줄이기 위함.
 
 ---
 
