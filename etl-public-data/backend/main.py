@@ -1,6 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 
+from pythonjsonlogger import jsonlogger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -12,6 +14,8 @@ from etl.context import run_id_var
 from quality.report_generator import generate_report
 from api.routes import router
 
+KST = timezone(timedelta(hours=9))
+
 
 class RunIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -19,12 +23,25 @@ class RunIdFilter(logging.Filter):
         return True
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s",
-)
-for _handler in logging.getLogger().handlers:
-    _handler.addFilter(RunIdFilter())
+class CustomJsonFormatter(jsonlogger.JsonFormatter):
+    def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:
+        super().add_fields(log_record, record, message_dict)
+        log_record["timestamp"] = datetime.now(KST).isoformat(timespec="milliseconds")
+        log_record["level"] = record.levelname
+        log_record["logger"] = record.name
+        log_record["run_id"] = getattr(record, "run_id", "-")
+        log_record["service"] = "etl-backend"
+        if record.exc_info:
+            log_record["traceback"] = self.formatException(record.exc_info)
+            record.exc_info = None
+            record.exc_text = None
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(CustomJsonFormatter())
+_handler.addFilter(RunIdFilter())
+logging.getLogger().setLevel(logging.INFO)
+logging.getLogger().addHandler(_handler)
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()

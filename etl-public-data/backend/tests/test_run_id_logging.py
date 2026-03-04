@@ -1,5 +1,5 @@
 """
-로깅 동작 검증 테스트 (run_id + duration_ms + 에러 표준화)
+로깅 동작 검증 테스트 (run_id + duration_ms + 에러 표준화 + JSON 포맷)
 
 검증 항목:
   1. 파이프라인 외부 로그는 run_id="-" (기본값)
@@ -16,18 +16,25 @@
   12. ERROR 레벨 로그에 exc_info(스택 트레이스) 첨부
   13. 중간 재시도는 WARNING + retry_exhausted=false
   14. 최종 재시도 실패는 ERROR + retry_exhausted=true + exc_info
+  15. JSON 포맷 출력이 유효한 JSON이며 필수 필드를 포함
+  16. ERROR 로그의 traceback이 JSON 'traceback' 필드로 직렬화됨
 
 실행 방법:
   cd backend
   python -m tests.test_run_id_logging
 """
 
+import io
+import json
 import logging
 import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+from pythonjsonlogger import jsonlogger
 
 sys.path.insert(0, ".")  # backend/ 기준 실행
 
@@ -419,6 +426,114 @@ def test_final_retry_is_error_with_exc_info() -> None:
     _assert(rec.exc_info[0] is TimeoutError, f"exc_info 타입 불일치: {rec.exc_info[0]}")
 
 
+# ── JSON 포맷 테스트용 헬퍼 ──────────────────────────────────────────────
+
+KST = timezone(timedelta(hours=9))
+
+
+class _TestJsonFormatter(jsonlogger.JsonFormatter):
+    """main.py의 CustomJsonFormatter와 동일한 로직 (테스트 격리용)."""
+
+    def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:
+        super().add_fields(log_record, record, message_dict)
+        log_record["timestamp"] = datetime.now(KST).isoformat(timespec="milliseconds")
+        log_record["level"] = record.levelname
+        log_record["logger"] = record.name
+        log_record["run_id"] = getattr(record, "run_id", "-")
+        log_record["service"] = "etl-backend"
+        if record.exc_info:
+            log_record["traceback"] = self.formatException(record.exc_info)
+            record.exc_info = None
+            record.exc_text = None
+
+
+def _make_json_logger(name: str) -> tuple[logging.Logger, io.StringIO]:
+    """격리된 JSON 로거와 출력 스트림을 반환한다."""
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(_TestJsonFormatter())
+    handler.addFilter(RunIdFilter())
+    test_logger = logging.getLogger(name)
+    test_logger.propagate = False
+    test_logger.addHandler(handler)
+    test_logger.setLevel(logging.INFO)
+    return test_logger, stream
+
+
+# ── 테스트 케이스 (JSON 포맷) ──────────────────────────────────────────────
+
+
+def test_json_output_is_valid_json() -> None:
+    """CustomJsonFormatter 출력이 파싱 가능한 JSON이어야 하고 필수 필드를 포함해야 한다."""
+    print("\n[TEST 15] JSON 포맷 출력 검증")
+
+    test_logger, stream = _make_json_logger("test.json.info")
+    run_id_var.set(uuid.uuid4().hex[:8])
+    expected_run_id = run_id_var.get()
+
+    test_logger.info("[air_quality] Extract complete rows=40 duration_ms=312")
+
+    line = stream.getvalue().strip()
+    _assert(len(line) > 0, "JSON 출력이 비어있음")
+    print(f"  출력: {line}")
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError as e:
+        _assert(False, f"JSON 파싱 실패: {e}")
+        return
+
+    required_fields = ["timestamp", "level", "logger", "run_id", "service", "message"]
+    for field in required_fields:
+        _assert(field in data, f"필수 필드 누락: '{field}'")
+
+    _assert(data["level"] == "INFO", f"level='{data['level']}' (expected 'INFO')")
+    _assert(data["logger"] == "test.json.info", f"logger='{data['logger']}'")
+    _assert(data["service"] == "etl-backend", f"service='{data['service']}'")
+    _assert(data["run_id"] == expected_run_id, f"run_id='{data['run_id']}' (expected '{expected_run_id}')")
+    _assert(len(data["run_id"]) == 8, f"run_id 길이 불일치: '{data['run_id']}'")
+
+    # timestamp는 ISO 8601 형식이어야 함
+    try:
+        datetime.fromisoformat(data["timestamp"])
+        _assert(True, f"timestamp ISO 8601 파싱 성공")
+    except ValueError:
+        _assert(False, f"timestamp ISO 8601 파싱 실패: '{data['timestamp']}'")
+
+
+def test_json_traceback_on_error() -> None:
+    """ERROR 로그의 exc_info가 JSON의 'traceback' 필드로 직렬화되어야 한다."""
+    print("\n[TEST 16] JSON ERROR 로그 traceback 필드 직렬화")
+
+    test_logger, stream = _make_json_logger("test.json.error")
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    try:
+        raise RuntimeError("DB connection refused")
+    except RuntimeError as e:
+        test_logger.error(
+            f"[subway] Load failed "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r}",
+            exc_info=True,
+        )
+
+    line = stream.getvalue().strip()
+    _assert(len(line) > 0, "JSON 출력이 비어있음")
+    print(f"  출력: {line[:120]}...")
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError as e:
+        _assert(False, f"JSON 파싱 실패: {e}")
+        return
+
+    _assert("traceback" in data, "traceback 필드가 JSON에 없음")
+    _assert("RuntimeError" in data["traceback"], f"traceback에 예외 클래스명 없음: {data['traceback'][:80]}")
+    _assert("DB connection refused" in data["traceback"], "traceback에 메시지 없음")
+    _assert(data["level"] == "ERROR", f"level='{data['level']}' (expected 'ERROR')")
+
+
 # ── 실행 ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -437,10 +552,12 @@ if __name__ == "__main__":
         test_exc_info_attached_to_error_log,
         test_retry_warning_is_not_exhausted,
         test_final_retry_is_error_with_exc_info,
+        test_json_output_is_valid_json,
+        test_json_traceback_on_error,
     ]
 
     print("=" * 60)
-    print("로깅 검증 테스트 (run_id + duration_ms + 에러 표준화)")
+    print("로깅 검증 테스트 (run_id + duration_ms + 에러 표준화 + JSON)")
     print("=" * 60)
 
     failed = 0
