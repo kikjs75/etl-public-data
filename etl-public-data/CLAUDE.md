@@ -55,3 +55,27 @@ Alembic 미사용. `backend/db/migrations.py`의 `MIGRATIONS` 리스트에 `{"ve
 - `quality/checker.py`의 `RANGE_CHECKS`에 필드별 유효 범위 정의됨 — 새 필드 추가 시 여기도 갱신
 - `catalog/lineage.py`의 `CATALOG`, `LINEAGE` dict — 새 데이터소스 추가 시 여기도 갱신
 - `etl/pipeline.py`의 `PIPELINE_CONFIG` — 새 소스 추가 시 여기에 등록
+
+## ELK 스택 진행 현황
+
+단계별로 구성 중. 각 단계 완료 후 다음 단계로 진행.
+
+| 단계 | 구성 | Logstash output | 상태 |
+|------|------|----------------|------|
+| Stage 1 | Filebeat + Logstash | stdout (rubydebug) | ✅ 완료 |
+| Stage 2 | + Elasticsearch | elasticsearch | 🔲 미완료 |
+| Stage 3 | + Kibana | elasticsearch | 🔲 미완료 |
+
+### 관련 파일
+- `elk/filebeat/filebeat.yml` — container input, Logstash 출력
+- `elk/logstash/pipeline/logstash.conf` — beats input, JSON 파싱, stdout 출력
+
+### Stage 1 확인된 사항
+- macOS Docker Desktop 환경에서 `add_docker_metadata`의 `container.name` 필드 enrichment 미동작
+- Filebeat의 `drop_event` 대신 Logstash 필터에서 처리 권장
+- ETL 실행 시 `run_id`, `rows`, `duration_ms` 등 필드가 Logstash stdout에서 확인됨
+
+### Stage 2 다음 작업
+- `elk/logstash/pipeline/logstash.conf`의 output을 elasticsearch로 변경
+- `docker-compose.yml`에 elasticsearch 서비스 추가
+- 검증: `curl localhost:9200/_cat/indices`로 인덱스 확인
