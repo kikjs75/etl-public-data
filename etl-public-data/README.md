@@ -4,12 +4,12 @@
 
 ## 기술스택
 
-| 영역 | 기술 |
-|------|------|
-| Backend | Python 3.11, FastAPI, SQLAlchemy, APScheduler |
-| DB | PostgreSQL 15 |
-| Frontend | React 18, Vite, Recharts, React Router |
-| Infra | Docker Compose (v1.25.0 이상, 파일 포맷 v3.7) |
+| 영역     | 기술                                          |
+| -------- | --------------------------------------------- |
+| Backend  | Python 3.11, FastAPI, SQLAlchemy, APScheduler |
+| DB       | PostgreSQL 15                                 |
+| Frontend | React 18, Vite, Recharts, React Router        |
+| Infra    | Docker Compose (v1.25.0 이상, 파일 포맷 v3.7) |
 
 ## 빠른 시작
 
@@ -32,11 +32,11 @@ docker-compose up --build
 
 3개 서비스가 기동됩니다:
 
-| 서비스 | URL | 설명 |
-|--------|-----|------|
-| Frontend | http://localhost:3000 | React 대시보드 |
-| Backend | http://localhost:8000 | FastAPI (Swagger: `/docs`) |
-| PostgreSQL | localhost:5432 | DB |
+| 서비스     | URL                   | 설명                       |
+| ---------- | --------------------- | -------------------------- |
+| Frontend   | http://localhost:3000 | React 대시보드             |
+| Backend    | http://localhost:8000 | FastAPI (Swagger: `/docs`) |
+| PostgreSQL | localhost:5432        | DB                         |
 
 ### 3. ETL 수동 실행
 
@@ -88,28 +88,28 @@ etl-public-data/
 
 ## API 엔드포인트
 
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/dashboard` | 수집 현황 요약 (총 레코드, 일별 건수, 최근 실행 로그) |
-| GET | `/api/quality/reports` | 품질 리포트 목록 |
-| GET | `/api/quality/reports/{date}` | 일자별 상세 리포트 (HTML + Markdown) |
-| GET | `/api/catalog` | 데이터 카탈로그 + 리니지 |
-| GET | `/api/data/{source}` | 수집 데이터 조회 (`air_quality`, `weather`, `subway`) |
-| POST | `/api/etl/run` | ETL 파이프라인 수동 실행 |
+| Method | Path                          | 설명                                                  |
+| ------ | ----------------------------- | ----------------------------------------------------- |
+| GET    | `/api/dashboard`              | 수집 현황 요약 (총 레코드, 일별 건수, 최근 실행 로그) |
+| GET    | `/api/quality/reports`        | 품질 리포트 목록                                      |
+| GET    | `/api/quality/reports/{date}` | 일자별 상세 리포트 (HTML + Markdown)                  |
+| GET    | `/api/catalog`                | 데이터 카탈로그 + 리니지                              |
+| GET    | `/api/data/{source}`          | 수집 데이터 조회 (`air_quality`, `weather`, `subway`) |
+| POST   | `/api/etl/run`                | ETL 파이프라인 수동 실행                              |
 
 ## 데이터 소스
 
-| 데이터셋 | 출처 | 갱신 주기 |
-|----------|------|----------|
-| 미세먼지 | [data.go.kr - 대기오염정보](http://apis.data.go.kr/B552584/ArpltnInforInqireSvc) | 매시간 |
-| 날씨 | [data.go.kr - 기상청 단기예보](http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0) | 3시간 |
-| 지하철 | [서울 열린데이터 - 교통카드 이용현황](http://openapi.seoul.go.kr:8088) | 일 1회 |
+| 데이터셋 | 출처                                                                                     | 갱신 주기 |
+| -------- | ---------------------------------------------------------------------------------------- | --------- |
+| 미세먼지 | [data.go.kr - 대기오염정보](http://apis.data.go.kr/B552584/ArpltnInforInqireSvc)         | 매시간    |
+| 날씨     | [data.go.kr - 기상청 단기예보](http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0) | 3시간     |
+| 지하철   | [서울 열린데이터 - 교통카드 이용현황](http://openapi.seoul.go.kr:8088)                   | 일 1회    |
 
 ## 스케줄
 
-| 작업 | 기본 주기 | 환경변수 |
-|------|----------|---------|
-| ETL 파이프라인 | 매시 정각 | `ETL_CRON_HOUR`, `ETL_CRON_MINUTE` |
+| 작업             | 기본 주기  | 환경변수                                       |
+| ---------------- | ---------- | ---------------------------------------------- |
+| ETL 파이프라인   | 매시 정각  | `ETL_CRON_HOUR`, `ETL_CRON_MINUTE`             |
 | 품질 리포트 생성 | 매일 01:00 | `QUALITY_REPORT_HOUR`, `QUALITY_REPORT_MINUTE` |
 
 ## 품질 검사 항목
