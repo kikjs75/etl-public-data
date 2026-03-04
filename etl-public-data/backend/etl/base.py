@@ -44,7 +44,25 @@ class BaseExtractor(ABC):
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 last_error = e
-                logger.warning(f"[{self.source_name}] Attempt {attempt} failed: {e} duration_ms={duration_ms}")
+                is_last = attempt == self.max_retries
+                if is_last:
+                    logger.error(
+                        f"[{self.source_name}] Fetch retry exhausted "
+                        f"error_type={type(e).__name__} "
+                        f"error_msg={str(e)!r} "
+                        f"attempt={attempt} max_retries={self.max_retries} "
+                        f"retry_exhausted=true "
+                        f"duration_ms={duration_ms}",
+                        exc_info=True,
+                    )
+                else:
+                    logger.warning(
+                        f"[{self.source_name}] Fetch attempt {attempt}/{self.max_retries} failed "
+                        f"error_type={type(e).__name__} "
+                        f"error_msg={str(e)!r} "
+                        f"duration_ms={duration_ms} "
+                        f"retry_exhausted=false",
+                    )
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"[{self.source_name}] All {self.max_retries} attempts failed: {last_error}")
 

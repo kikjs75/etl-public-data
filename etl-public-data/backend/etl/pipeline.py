@@ -101,7 +101,13 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
                 "loaded": loaded_count,
             }
         except Exception as e:
-            logger.error(f"[{source}] Pipeline failed: {e} duration_ms={_ms(t_total)}")
+            logger.error(
+                f"[{source}] Pipeline failed "
+                f"error_type={type(e).__name__} "
+                f"error_msg={str(e)!r} "
+                f"duration_ms={_ms(t_total)}",
+                exc_info=True,
+            )
             _update_run_log(log.id, "failed", error_message=str(e))
             results[source] = {"status": "failed", "error": str(e)}
 

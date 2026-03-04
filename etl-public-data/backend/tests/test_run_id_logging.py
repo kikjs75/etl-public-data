@@ -1,5 +1,5 @@
 """
-로깅 동작 검증 테스트 (run_id + duration_ms)
+로깅 동작 검증 테스트 (run_id + duration_ms + 에러 표준화)
 
 검증 항목:
   1. 파이프라인 외부 로그는 run_id="-" (기본값)
@@ -11,6 +11,11 @@
   7. duration_ms는 0 이상의 정수
   8. 에러 로그에도 duration_ms 포함
   9. HTTP fetch 로그에 duration_ms 포함
+  10. 에러 로그에 error_type 포함 (예외 클래스명)
+  11. 에러 로그에 error_msg 포함 (따옴표로 감싼 메시지)
+  12. ERROR 레벨 로그에 exc_info(스택 트레이스) 첨부
+  13. 중간 재시도는 WARNING + retry_exhausted=false
+  14. 최종 재시도 실패는 ERROR + retry_exhausted=true + exc_info
 
 실행 방법:
   cd backend
@@ -22,6 +27,7 @@ import re
 import sys
 import time
 import uuid
+from typing import Optional
 
 sys.path.insert(0, ".")  # backend/ 기준 실행
 
@@ -68,7 +74,10 @@ capture_handler = CaptureHandler()
 capture_handler.addFilter(RunIdFilter())
 logging.getLogger().addHandler(capture_handler)
 
-_DURATION_RE = re.compile(r"duration_ms=(\d+)")
+_DURATION_RE   = re.compile(r"duration_ms=(\d+)")
+_ERROR_TYPE_RE = re.compile(r"error_type=(\w+)")
+_ERROR_MSG_RE  = re.compile(r"error_msg='([^']*)'|error_msg=\"([^\"]*)\"")
+_RETRY_EX_RE   = re.compile(r"retry_exhausted=(true|false)")
 
 
 def _records_for(logger_name: str) -> list[logging.LogRecord]:
@@ -81,6 +90,23 @@ def _has_duration(record: logging.LogRecord) -> tuple[bool, int]:
     if m:
         return True, int(m.group(1))
     return False, -1
+
+
+def _get_error_type(record: logging.LogRecord) -> Optional[str]:
+    """메시지에서 error_type=XXX 추출."""
+    m = _ERROR_TYPE_RE.search(record.getMessage())
+    return m.group(1) if m else None
+
+
+def _has_error_msg(record: logging.LogRecord) -> bool:
+    """메시지에 error_msg='...' 포함 여부."""
+    return bool(_ERROR_MSG_RE.search(record.getMessage()))
+
+
+def _get_retry_exhausted(record: logging.LogRecord) -> Optional[str]:
+    """메시지에서 retry_exhausted=true/false 추출."""
+    m = _RETRY_EX_RE.search(record.getMessage())
+    return m.group(1) if m else None
 
 
 def _assert(condition: bool, msg: str) -> None:
@@ -261,6 +287,138 @@ def test_duration_ms_in_http_fetch_log() -> None:
         _assert(val >= 0, f"duration_ms={val} 는 0 이상이어야 함")
 
 
+def test_error_type_in_error_log() -> None:
+    """ERROR 로그에 error_type=ExceptionClass 가 포함되어야 한다."""
+    print("\n[TEST 10] 에러 로그 error_type 포함")
+    captured.clear()
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    # pipeline.py / db_loader.py 실제 포맷 재현
+    try:
+        raise ValueError("invalid pm10 value")
+    except ValueError as e:
+        log_pipeline.error(
+            f"[air_quality] Pipeline failed "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r} "
+            f"duration_ms=312",
+            exc_info=True,
+        )
+
+    try:
+        raise RuntimeError("DB connection refused")
+    except RuntimeError as e:
+        log_loader.error(
+            f"[subway] Load failed "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r}",
+            exc_info=True,
+        )
+
+    for rec in captured:
+        et = _get_error_type(rec)
+        _assert(et is not None, f"{rec.name} 로그에 error_type 없음: '{rec.getMessage()}'")
+        _assert(et in ("ValueError", "RuntimeError"), f"error_type='{et}' 예상치 못한 값")
+
+
+def test_error_msg_in_error_log() -> None:
+    """ERROR 로그에 error_msg='...' 가 따옴표로 감싸져 포함되어야 한다."""
+    print("\n[TEST 11] 에러 로그 error_msg 포함 (따옴표)")
+    captured.clear()
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    try:
+        raise ConnectionError("timeout after 30s")
+    except ConnectionError as e:
+        log_pipeline.error(
+            f"[weather] Pipeline failed "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r} "
+            f"duration_ms=5123",
+            exc_info=True,
+        )
+
+    rec = captured[-1]
+    _assert(_has_error_msg(rec), f"error_msg 없음: '{rec.getMessage()}'")
+    _assert("timeout after 30s" in rec.getMessage(), "error_msg 내용 불일치")
+
+
+def test_exc_info_attached_to_error_log() -> None:
+    """ERROR 레벨 로그에 exc_info (스택 트레이스) 가 첨부되어야 한다."""
+    print("\n[TEST 12] ERROR 로그 exc_info 첨부")
+    captured.clear()
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    try:
+        raise KeyError("missing field: station_name")
+    except KeyError as e:
+        log_pipeline.error(
+            f"[air_quality] Pipeline failed "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r} "
+            f"duration_ms=88",
+            exc_info=True,
+        )
+
+    rec = captured[-1]
+    _assert(rec.exc_info is not None, "exc_info가 None — 스택 트레이스 없음")
+    _assert(rec.exc_info[0] is KeyError, f"exc_info 타입 불일치: {rec.exc_info[0]}")
+
+
+def test_retry_warning_is_not_exhausted() -> None:
+    """중간 재시도(WARNING)는 retry_exhausted=false 이어야 한다."""
+    print("\n[TEST 13] 중간 재시도 WARNING — retry_exhausted=false")
+    captured.clear()
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    # base.py 중간 재시도 포맷 재현 (attempt 1/3, 2/3)
+    for attempt in range(1, 3):
+        try:
+            raise TimeoutError("read timeout")
+        except TimeoutError as e:
+            log_base.warning(
+                f"[air_quality] Fetch attempt {attempt}/3 failed "
+                f"error_type={type(e).__name__} "
+                f"error_msg={str(e)!r} "
+                f"duration_ms=5000 "
+                f"retry_exhausted=false",
+            )
+
+    for rec in captured:
+        _assert(rec.levelname == "WARNING", f"중간 재시도는 WARNING 이어야 함: {rec.levelname}")
+        exhausted = _get_retry_exhausted(rec)
+        _assert(exhausted == "false", f"retry_exhausted='{exhausted}' (expected 'false')")
+        _assert(rec.exc_info is None, "중간 재시도에 exc_info 있으면 안 됨")
+
+
+def test_final_retry_is_error_with_exc_info() -> None:
+    """최종 재시도 실패(ERROR)는 retry_exhausted=true + exc_info 첨부이어야 한다."""
+    print("\n[TEST 14] 최종 재시도 ERROR — retry_exhausted=true + exc_info")
+    captured.clear()
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    # base.py 최종 실패 포맷 재현 (attempt 3/3, is_last=True)
+    try:
+        raise TimeoutError("read timeout")
+    except TimeoutError as e:
+        log_base.error(
+            f"[air_quality] Fetch retry exhausted "
+            f"error_type={type(e).__name__} "
+            f"error_msg={str(e)!r} "
+            f"attempt=3 max_retries=3 "
+            f"retry_exhausted=true "
+            f"duration_ms=5000",
+            exc_info=True,
+        )
+
+    rec = captured[-1]
+    _assert(rec.levelname == "ERROR", f"최종 실패는 ERROR 이어야 함: {rec.levelname}")
+    exhausted = _get_retry_exhausted(rec)
+    _assert(exhausted == "true", f"retry_exhausted='{exhausted}' (expected 'true')")
+    _assert(rec.exc_info is not None, "최종 실패에 exc_info 없음")
+    _assert(rec.exc_info[0] is TimeoutError, f"exc_info 타입 불일치: {rec.exc_info[0]}")
+
+
 # ── 실행 ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -274,10 +432,15 @@ if __name__ == "__main__":
         test_duration_ms_is_non_negative,
         test_duration_ms_in_error_log,
         test_duration_ms_in_http_fetch_log,
+        test_error_type_in_error_log,
+        test_error_msg_in_error_log,
+        test_exc_info_attached_to_error_log,
+        test_retry_warning_is_not_exhausted,
+        test_final_retry_is_error_with_exc_info,
     ]
 
     print("=" * 60)
-    print("로깅 검증 테스트 (run_id + duration_ms)")
+    print("로깅 검증 테스트 (run_id + duration_ms + 에러 표준화)")
     print("=" * 60)
 
     failed = 0
