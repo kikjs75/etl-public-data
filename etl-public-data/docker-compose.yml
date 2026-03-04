@@ -26,7 +26,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -34,6 +35,27 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.2
+    volumes:
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "5044:5044"
+    environment:
+      LS_JAVA_OPTS: "-Xmx256m -Xms256m"
+      XPACK_MONITORING_ENABLED: "false"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.12.2
+    user: root
+    volumes:
+      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - logstash
+    command: filebeat -e --strict.perms=false
 
 volumes:
   pgdata:
