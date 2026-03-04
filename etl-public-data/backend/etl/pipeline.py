@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -64,40 +65,51 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
         run_id = uuid.uuid4().hex[:8]
         run_id_var.set(run_id)
         log = _create_run_log(source)
+        t_total = time.perf_counter()
         try:
             # Extract
             api_key = getattr(settings, config["api_key_attr"], "")
             extractor = config["extractor_cls"](api_key=api_key)
 
+            t0 = time.perf_counter()
             if settings.use_mock_data or not api_key:
                 raw_data = extractor.mock_extract()
-                logger.info(f"[{source}] Using mock data ({len(raw_data)} records)")
+                logger.info(f"[{source}] Using mock data rows={len(raw_data)} duration_ms={_ms(t0)}")
             else:
                 raw_data = extractor.extract()
-                logger.info(f"[{source}] Extracted {len(raw_data)} records from API")
+                logger.info(f"[{source}] Extract complete rows={len(raw_data)} duration_ms={_ms(t0)}")
 
             extractor.close()
 
             # Transform
+            t0 = time.perf_counter()
             mapped = region_mapper.transform(raw_data)
             normalized = config["normalizer"].transform(mapped)
             interpolated = config["interpolator"].transform(normalized)
+            logger.info(f"[{source}] Transform complete rows={len(interpolated)} duration_ms={_ms(t0)}")
 
             # Load
+            t0 = time.perf_counter()
             loaded_count = upsert_records(source, interpolated)
+            logger.info(f"[{source}] Load complete rows={loaded_count} duration_ms={_ms(t0)}")
 
             _update_run_log(log.id, "success", len(raw_data), loaded_count)
+            logger.info(f"[{source}] Pipeline complete extracted={len(raw_data)} loaded={loaded_count} duration_ms={_ms(t_total)}")
             results[source] = {
                 "status": "success",
                 "extracted": len(raw_data),
                 "loaded": loaded_count,
             }
         except Exception as e:
-            logger.error(f"[{source}] Pipeline failed: {e}")
+            logger.error(f"[{source}] Pipeline failed: {e} duration_ms={_ms(t_total)}")
             _update_run_log(log.id, "failed", error_message=str(e))
             results[source] = {"status": "failed", "error": str(e)}
 
     return results
+
+
+def _ms(t_start: float) -> int:
+    return int((time.perf_counter() - t_start) * 1000)
 
 
 def _create_run_log(source: str) -> EtlRunLog:

@@ -33,14 +33,18 @@ class BaseExtractor(ABC):
     def fetch(self, url: str, params: dict | None = None) -> dict:
         last_error = None
         for attempt in range(1, self.max_retries + 1):
+            t0 = time.perf_counter()
             try:
                 resp = self.client.get(url, params=params)
                 resp.raise_for_status()
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 time.sleep(self.rate_limit_delay)
+                logger.info(f"[{self.source_name}] HTTP GET success attempt={attempt} duration_ms={duration_ms}")
                 return resp.json()
             except Exception as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 last_error = e
-                logger.warning(f"[{self.source_name}] Attempt {attempt} failed: {e}")
+                logger.warning(f"[{self.source_name}] Attempt {attempt} failed: {e} duration_ms={duration_ms}")
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"[{self.source_name}] All {self.max_retries} attempts failed: {last_error}")
 

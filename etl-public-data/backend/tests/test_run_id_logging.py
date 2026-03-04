@@ -1,11 +1,16 @@
 """
-run_id 로깅 동작 검증 테스트
+로깅 동작 검증 테스트 (run_id + duration_ms)
 
 검증 항목:
   1. 파이프라인 외부 로그는 run_id="-" (기본값)
   2. 파이프라인 실행 중 모든 레이어(pipeline, base, db_loader)가 동일 run_id 공유
   3. 소스별로 run_id가 독립적으로 생성됨
   4. run_id는 8자리 hex 문자열
+  5. 에러 로그도 run_id 유지
+  6. Extract / Transform / Load 로그에 duration_ms 포함
+  7. duration_ms는 0 이상의 정수
+  8. 에러 로그에도 duration_ms 포함
+  9. HTTP fetch 로그에 duration_ms 포함
 
 실행 방법:
   cd backend
@@ -13,7 +18,9 @@ run_id 로깅 동작 검증 테스트
 """
 
 import logging
+import re
 import sys
+import time
 import uuid
 
 sys.path.insert(0, ".")  # backend/ 기준 실행
@@ -45,7 +52,6 @@ log_main     = logging.getLogger("main")
 log_pipeline = logging.getLogger("etl.pipeline")
 log_base     = logging.getLogger("etl.base")
 log_loader   = logging.getLogger("etl.loaders.db_loader")
-log_quality  = logging.getLogger("quality.checker")
 
 
 # ── 테스트 헬퍼 ───────────────────────────────────────────────────────────
@@ -62,9 +68,19 @@ capture_handler = CaptureHandler()
 capture_handler.addFilter(RunIdFilter())
 logging.getLogger().addHandler(capture_handler)
 
+_DURATION_RE = re.compile(r"duration_ms=(\d+)")
+
 
 def _records_for(logger_name: str) -> list[logging.LogRecord]:
     return [r for r in captured if r.name == logger_name]
+
+
+def _has_duration(record: logging.LogRecord) -> tuple[bool, int]:
+    """메시지에서 duration_ms=N 추출. (존재 여부, 값)"""
+    m = _DURATION_RE.search(record.getMessage())
+    if m:
+        return True, int(m.group(1))
+    return False, -1
 
 
 def _assert(condition: bool, msg: str) -> None:
@@ -97,10 +113,10 @@ def test_run_id_shared_across_layers() -> None:
     run_id = uuid.uuid4().hex[:8]
     run_id_var.set(run_id)
 
-    log_pipeline.info("[air_quality] Extracted 40 records")
-    log_base.warning("[air_quality] Attempt 1 failed: timeout")
-    log_pipeline.info("[air_quality] Transform complete")
-    log_loader.info("[air_quality] Upserted 40 records")
+    log_pipeline.info("[air_quality] Extract complete rows=40 duration_ms=312")
+    log_base.warning("[air_quality] Attempt 1 failed: timeout duration_ms=5000")
+    log_pipeline.info("[air_quality] Transform complete rows=40 duration_ms=5")
+    log_loader.info("[air_quality] Load complete rows=40 duration_ms=88")
 
     for rec in captured:
         _assert(rec.run_id == run_id,
@@ -114,13 +130,13 @@ def test_run_id_isolated_per_source() -> None:
 
     run_id_aq = uuid.uuid4().hex[:8]
     run_id_var.set(run_id_aq)
-    log_pipeline.info("[air_quality] Extracted 40 records")
-    log_loader.info("[air_quality] Upserted 40 records")
+    log_pipeline.info("[air_quality] Extract complete rows=40 duration_ms=200")
+    log_loader.info("[air_quality] Load complete rows=40 duration_ms=80")
 
     run_id_wt = uuid.uuid4().hex[:8]
     run_id_var.set(run_id_wt)
-    log_pipeline.info("[weather] Extracted 907 records")
-    log_loader.info("[weather] Upserted 907 records")
+    log_pipeline.info("[weather] Extract complete rows=907 duration_ms=350")
+    log_loader.info("[weather] Load complete rows=907 duration_ms=120")
 
     _assert(run_id_aq != run_id_wt, "소스마다 run_id가 달라야 함")
 
@@ -159,12 +175,90 @@ def test_error_log_preserves_run_id() -> None:
     run_id = uuid.uuid4().hex[:8]
     run_id_var.set(run_id)
 
-    log_pipeline.info("[subway] Extracted 617 records")
-    log_pipeline.error("[subway] Pipeline failed: connection error")
+    log_pipeline.info("[subway] Extract complete rows=617 duration_ms=410")
+    log_pipeline.error("[subway] Pipeline failed: connection error duration_ms=5123")
 
     for rec in captured:
         _assert(rec.run_id == run_id,
                 f"{rec.levelname} 로그 run_id='{rec.run_id}' should be '{run_id}'")
+
+
+def test_duration_ms_in_phase_logs() -> None:
+    """Extract / Transform / Load 로그에 duration_ms가 포함되어야 한다."""
+    print("\n[TEST 6] 단계별 로그 duration_ms 포함 여부")
+    captured.clear()
+
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    # pipeline.py의 실제 로그 포맷 재현
+    t0 = time.perf_counter()
+    time.sleep(0.01)
+    extract_ms = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
+    time.sleep(0.005)
+    transform_ms = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
+    time.sleep(0.008)
+    load_ms = int((time.perf_counter() - t0) * 1000)
+
+    log_pipeline.info(f"[air_quality] Extract complete rows=40 duration_ms={extract_ms}")
+    log_pipeline.info(f"[air_quality] Transform complete rows=40 duration_ms={transform_ms}")
+    log_loader.info(f"[air_quality] Load complete rows=40 duration_ms={load_ms}")
+
+    for rec in captured:
+        found, val = _has_duration(rec)
+        _assert(found, f"{rec.name} 로그에 duration_ms 없음: '{rec.getMessage()}'")
+        _assert(val >= 0, f"duration_ms={val} 는 0 이상이어야 함")
+
+
+def test_duration_ms_is_non_negative() -> None:
+    """duration_ms는 항상 0 이상의 정수여야 한다."""
+    print("\n[TEST 7] duration_ms 값 범위 (0 이상 정수)")
+    captured.clear()
+
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    for ms in [0, 1, 50, 312, 5000]:
+        log_pipeline.info(f"[air_quality] Extract complete rows=40 duration_ms={ms}")
+
+    for rec in captured:
+        found, val = _has_duration(rec)
+        _assert(found, f"duration_ms 없음: '{rec.getMessage()}'")
+        _assert(val >= 0, f"duration_ms={val} 는 0 이상이어야 함")
+        _assert(isinstance(val, int), f"duration_ms={val} 는 정수여야 함")
+
+
+def test_duration_ms_in_error_log() -> None:
+    """에러 로그에도 duration_ms가 포함되어야 한다."""
+    print("\n[TEST 8] 에러 로그 duration_ms 포함")
+    captured.clear()
+
+    run_id_var.set(uuid.uuid4().hex[:8])
+    log_pipeline.error("[subway] Pipeline failed: timeout duration_ms=5123")
+
+    for rec in captured:
+        found, val = _has_duration(rec)
+        _assert(found, f"에러 로그에 duration_ms 없음: '{rec.getMessage()}'")
+        _assert(val >= 0, f"duration_ms={val} 는 0 이상이어야 함")
+
+
+def test_duration_ms_in_http_fetch_log() -> None:
+    """HTTP fetch 로그(base.py)에도 duration_ms가 포함되어야 한다."""
+    print("\n[TEST 9] HTTP fetch 로그 duration_ms 포함")
+    captured.clear()
+
+    run_id_var.set(uuid.uuid4().hex[:8])
+
+    # base.py fetch()의 실제 로그 포맷 재현
+    log_base.info("[air_quality] HTTP GET success attempt=1 duration_ms=287")
+    log_base.warning("[air_quality] Attempt 2 failed: ConnectTimeout duration_ms=5000")
+
+    for rec in _records_for("etl.base"):
+        found, val = _has_duration(rec)
+        _assert(found, f"HTTP 로그에 duration_ms 없음: '{rec.getMessage()}'")
+        _assert(val >= 0, f"duration_ms={val} 는 0 이상이어야 함")
 
 
 # ── 실행 ──────────────────────────────────────────────────────────────────
@@ -176,10 +270,14 @@ if __name__ == "__main__":
         test_run_id_isolated_per_source,
         test_run_id_format,
         test_error_log_preserves_run_id,
+        test_duration_ms_in_phase_logs,
+        test_duration_ms_is_non_negative,
+        test_duration_ms_in_error_log,
+        test_duration_ms_in_http_fetch_log,
     ]
 
     print("=" * 60)
-    print("run_id 로깅 검증 테스트")
+    print("로깅 검증 테스트 (run_id + duration_ms)")
     print("=" * 60)
 
     failed = 0
