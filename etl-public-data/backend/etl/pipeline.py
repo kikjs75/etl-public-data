@@ -74,10 +74,12 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             t0 = time.perf_counter()
             if settings.use_mock_data or not api_key:
                 raw_data = extractor.mock_extract()
-                logger.info(f"[{source}] Using mock data rows={len(raw_data)} duration_ms={_ms(t0)}")
+                logger.info(f"[{source}] Using mock data",
+                            extra={"rows": len(raw_data), "duration_ms": _ms(t0), "mock": True})
             else:
                 raw_data = extractor.extract()
-                logger.info(f"[{source}] Extract complete rows={len(raw_data)} duration_ms={_ms(t0)}")
+                logger.info(f"[{source}] Extract complete",
+                            extra={"rows": len(raw_data), "duration_ms": _ms(t0)})
 
             extractor.close()
 
@@ -86,15 +88,18 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             mapped = region_mapper.transform(raw_data)
             normalized = config["normalizer"].transform(mapped)
             interpolated = config["interpolator"].transform(normalized)
-            logger.info(f"[{source}] Transform complete rows={len(interpolated)} duration_ms={_ms(t0)}")
+            logger.info(f"[{source}] Transform complete",
+                        extra={"rows": len(interpolated), "duration_ms": _ms(t0)})
 
             # Load
             t0 = time.perf_counter()
             loaded_count = upsert_records(source, interpolated)
-            logger.info(f"[{source}] Load complete rows={loaded_count} duration_ms={_ms(t0)}")
+            logger.info(f"[{source}] Load complete",
+                        extra={"rows": loaded_count, "duration_ms": _ms(t0)})
 
             _update_run_log(log.id, "success", len(raw_data), loaded_count)
-            logger.info(f"[{source}] Pipeline complete extracted={len(raw_data)} loaded={loaded_count} duration_ms={_ms(t_total)}")
+            logger.info(f"[{source}] Pipeline complete",
+                        extra={"extracted": len(raw_data), "loaded": loaded_count, "duration_ms": _ms(t_total)})
             results[source] = {
                 "status": "success",
                 "extracted": len(raw_data),
@@ -102,10 +107,8 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             }
         except Exception as e:
             logger.error(
-                f"[{source}] Pipeline failed "
-                f"error_type={type(e).__name__} "
-                f"error_msg={str(e)!r} "
-                f"duration_ms={_ms(t_total)}",
+                f"[{source}] Pipeline failed",
+                extra={"error_type": type(e).__name__, "error_msg": str(e), "duration_ms": _ms(t_total)},
                 exc_info=True,
             )
             _update_run_log(log.id, "failed", error_message=str(e))

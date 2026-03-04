@@ -45,13 +45,12 @@ def upsert_records(source: str, records: list[dict[str, Any]]) -> int:
             loaded += 1
 
         db.commit()
-        logger.info(f"[{source}] Upserted {loaded} records")
+        logger.info(f"[{source}] Upserted records", extra={"rows": loaded})
     except Exception as e:
         db.rollback()
         logger.error(
-            f"[{source}] Load failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r}",
+            f"[{source}] Load failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e)},
             exc_info=True,
         )
         raise

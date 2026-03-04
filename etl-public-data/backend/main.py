@@ -16,6 +16,14 @@ from api.routes import router
 
 KST = timezone(timedelta(hours=9))
 
+_STDLIB_ATTRS = frozenset({
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "thread", "threadName", "taskName",
+    "run_id",
+})
+
 
 class RunIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -31,6 +39,9 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         log_record["logger"] = record.name
         log_record["run_id"] = getattr(record, "run_id", "-")
         log_record["service"] = "etl-backend"
+        for key, value in record.__dict__.items():
+            if key not in _STDLIB_ATTRS and key not in log_record:
+                log_record[key] = value
         if record.exc_info:
             log_record["traceback"] = self.formatException(record.exc_info)
             record.exc_info = None

@@ -39,7 +39,8 @@ class BaseExtractor(ABC):
                 resp.raise_for_status()
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 time.sleep(self.rate_limit_delay)
-                logger.info(f"[{self.source_name}] HTTP GET success attempt={attempt} duration_ms={duration_ms}")
+                logger.info(f"[{self.source_name}] HTTP GET success",
+                            extra={"attempt": attempt, "duration_ms": duration_ms})
                 return resp.json()
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -47,21 +48,28 @@ class BaseExtractor(ABC):
                 is_last = attempt == self.max_retries
                 if is_last:
                     logger.error(
-                        f"[{self.source_name}] Fetch retry exhausted "
-                        f"error_type={type(e).__name__} "
-                        f"error_msg={str(e)!r} "
-                        f"attempt={attempt} max_retries={self.max_retries} "
-                        f"retry_exhausted=true "
-                        f"duration_ms={duration_ms}",
+                        f"[{self.source_name}] Fetch retry exhausted",
+                        extra={
+                            "error_type": type(e).__name__,
+                            "error_msg": str(e),
+                            "attempt": attempt,
+                            "max_retries": self.max_retries,
+                            "retry_exhausted": True,
+                            "duration_ms": duration_ms,
+                        },
                         exc_info=True,
                     )
                 else:
                     logger.warning(
-                        f"[{self.source_name}] Fetch attempt {attempt}/{self.max_retries} failed "
-                        f"error_type={type(e).__name__} "
-                        f"error_msg={str(e)!r} "
-                        f"duration_ms={duration_ms} "
-                        f"retry_exhausted=false",
+                        f"[{self.source_name}] Fetch attempt failed",
+                        extra={
+                            "error_type": type(e).__name__,
+                            "error_msg": str(e),
+                            "attempt": attempt,
+                            "max_retries": self.max_retries,
+                            "retry_exhausted": False,
+                            "duration_ms": duration_ms,
+                        },
                     )
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"[{self.source_name}] All {self.max_retries} attempts failed: {last_error}")

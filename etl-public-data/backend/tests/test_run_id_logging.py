@@ -1,5 +1,5 @@
 """
-로깅 동작 검증 테스트 (run_id + duration_ms + 에러 표준화 + JSON 포맷)
+로깅 동작 검증 테스트 (2단계 — extra={} 분리 필드)
 
 검증 항목:
   1. 파이프라인 외부 로그는 run_id="-" (기본값)
@@ -7,16 +7,16 @@
   3. 소스별로 run_id가 독립적으로 생성됨
   4. run_id는 8자리 hex 문자열
   5. 에러 로그도 run_id 유지
-  6. Extract / Transform / Load 로그에 duration_ms 포함
+  6. Extract / Transform / Load 로그에 duration_ms extra 필드 포함
   7. duration_ms는 0 이상의 정수
-  8. 에러 로그에도 duration_ms 포함
-  9. HTTP fetch 로그에 duration_ms 포함
-  10. 에러 로그에 error_type 포함 (예외 클래스명)
-  11. 에러 로그에 error_msg 포함 (따옴표로 감싼 메시지)
+  8. 에러 로그에도 duration_ms extra 필드 포함
+  9. HTTP fetch 로그에 duration_ms extra 필드 포함
+  10. 에러 로그에 error_type extra 필드 포함 (예외 클래스명)
+  11. 에러 로그에 error_msg extra 필드 포함
   12. ERROR 레벨 로그에 exc_info(스택 트레이스) 첨부
-  13. 중간 재시도는 WARNING + retry_exhausted=false
-  14. 최종 재시도 실패는 ERROR + retry_exhausted=true + exc_info
-  15. JSON 포맷 출력이 유효한 JSON이며 필수 필드를 포함
+  13. 중간 재시도는 WARNING + retry_exhausted=False (bool extra 필드)
+  14. 최종 재시도 실패는 ERROR + retry_exhausted=True + exc_info
+  15. JSON 포맷 출력이 유효한 JSON이며 extra 필드가 최상위 키로 포함
   16. ERROR 로그의 traceback이 JSON 'traceback' 필드로 직렬화됨
 
 실행 방법:
@@ -24,11 +24,9 @@
   python -m tests.test_run_id_logging
 """
 
-from etl.context import run_id_var
 import io
 import json
 import logging
-import re
 import sys
 import time
 import uuid
@@ -38,6 +36,8 @@ from typing import Optional
 from pythonjsonlogger import jsonlogger
 
 sys.path.insert(0, ".")  # backend/ 기준 실행
+
+from etl.context import run_id_var
 
 
 # ── 로깅 설정 (main.py와 동일한 구성) ──────────────────────────────────────
@@ -80,39 +80,35 @@ capture_handler = CaptureHandler()
 capture_handler.addFilter(RunIdFilter())
 logging.getLogger().addHandler(capture_handler)
 
-_DURATION_RE = re.compile(r"duration_ms=(\d+)")
-_ERROR_TYPE_RE = re.compile(r"error_type=(\w+)")
-_ERROR_MSG_RE = re.compile(r"error_msg='([^']*)'|error_msg=\"([^\"]*)\"")
-_RETRY_EX_RE = re.compile(r"retry_exhausted=(true|false)")
-
 
 def _records_for(logger_name: str) -> list[logging.LogRecord]:
     return [r for r in captured if r.name == logger_name]
 
 
 def _has_duration(record: logging.LogRecord) -> tuple[bool, int]:
-    """메시지에서 duration_ms=N 추출. (존재 여부, 값)"""
-    m = _DURATION_RE.search(record.getMessage())
-    if m:
-        return True, int(m.group(1))
+    """LogRecord의 duration_ms extra 필드 확인."""
+    val = getattr(record, "duration_ms", None)
+    if val is not None:
+        return True, int(val)
     return False, -1
 
 
 def _get_error_type(record: logging.LogRecord) -> Optional[str]:
-    """메시지에서 error_type=XXX 추출."""
-    m = _ERROR_TYPE_RE.search(record.getMessage())
-    return m.group(1) if m else None
+    """LogRecord의 error_type extra 필드 추출."""
+    return getattr(record, "error_type", None)
 
 
 def _has_error_msg(record: logging.LogRecord) -> bool:
-    """메시지에 error_msg='...' 포함 여부."""
-    return bool(_ERROR_MSG_RE.search(record.getMessage()))
+    """LogRecord에 error_msg extra 필드 포함 여부."""
+    return getattr(record, "error_msg", None) is not None
 
 
 def _get_retry_exhausted(record: logging.LogRecord) -> Optional[str]:
-    """메시지에서 retry_exhausted=true/false 추출."""
-    m = _RETRY_EX_RE.search(record.getMessage())
-    return m.group(1) if m else None
+    """LogRecord의 retry_exhausted extra 필드 추출 (bool → 'true'/'false')."""
+    val = getattr(record, "retry_exhausted", None)
+    if val is None:
+        return None
+    return "true" if val else "false"
 
 
 def _assert(condition: bool, msg: str) -> None:
@@ -145,11 +141,12 @@ def test_run_id_shared_across_layers() -> None:
     run_id = uuid.uuid4().hex[:8]
     run_id_var.set(run_id)
 
-    log_pipeline.info("[air_quality] Extract complete rows=40 duration_ms=312")
-    log_base.warning(
-        "[air_quality] Attempt 1 failed: timeout duration_ms=5000")
-    log_pipeline.info("[air_quality] Transform complete rows=40 duration_ms=5")
-    log_loader.info("[air_quality] Load complete rows=40 duration_ms=88")
+    log_pipeline.info("[air_quality] Extract complete", extra={"rows": 40, "duration_ms": 312})
+    log_base.warning("[air_quality] Fetch attempt failed",
+                     extra={"error_type": "TimeoutError", "error_msg": "timeout",
+                            "attempt": 1, "max_retries": 3, "retry_exhausted": False, "duration_ms": 5000})
+    log_pipeline.info("[air_quality] Transform complete", extra={"rows": 40, "duration_ms": 5})
+    log_loader.info("[air_quality] Load complete", extra={"rows": 40, "duration_ms": 88})
 
     for rec in captured:
         _assert(rec.run_id == run_id,
@@ -163,13 +160,13 @@ def test_run_id_isolated_per_source() -> None:
 
     run_id_aq = uuid.uuid4().hex[:8]
     run_id_var.set(run_id_aq)
-    log_pipeline.info("[air_quality] Extract complete rows=40 duration_ms=200")
-    log_loader.info("[air_quality] Load complete rows=40 duration_ms=80")
+    log_pipeline.info("[air_quality] Extract complete", extra={"rows": 40, "duration_ms": 200})
+    log_loader.info("[air_quality] Load complete", extra={"rows": 40, "duration_ms": 80})
 
     run_id_wt = uuid.uuid4().hex[:8]
     run_id_var.set(run_id_wt)
-    log_pipeline.info("[weather] Extract complete rows=907 duration_ms=350")
-    log_loader.info("[weather] Load complete rows=907 duration_ms=120")
+    log_pipeline.info("[weather] Extract complete", extra={"rows": 907, "duration_ms": 350})
+    log_loader.info("[weather] Load complete", extra={"rows": 907, "duration_ms": 120})
 
     _assert(run_id_aq != run_id_wt, "소스마다 run_id가 달라야 함")
 
@@ -208,9 +205,9 @@ def test_error_log_preserves_run_id() -> None:
     run_id = uuid.uuid4().hex[:8]
     run_id_var.set(run_id)
 
-    log_pipeline.info("[subway] Extract complete rows=617 duration_ms=410")
-    log_pipeline.error(
-        "[subway] Pipeline failed: connection error duration_ms=5123")
+    log_pipeline.info("[subway] Extract complete", extra={"rows": 617, "duration_ms": 410})
+    log_pipeline.error("[subway] Pipeline failed",
+                       extra={"error_type": "ConnectionError", "error_msg": "connection error", "duration_ms": 5123})
 
     for rec in captured:
         _assert(rec.run_id == run_id,
@@ -218,13 +215,12 @@ def test_error_log_preserves_run_id() -> None:
 
 
 def test_duration_ms_in_phase_logs() -> None:
-    """Extract / Transform / Load 로그에 duration_ms가 포함되어야 한다."""
+    """Extract / Transform / Load 로그에 duration_ms extra 필드가 포함되어야 한다."""
     print("\n[TEST 6] 단계별 로그 duration_ms 포함 여부")
     captured.clear()
 
     run_id_var.set(uuid.uuid4().hex[:8])
 
-    # pipeline.py의 실제 로그 포맷 재현
     t0 = time.perf_counter()
     time.sleep(0.01)
     extract_ms = int((time.perf_counter() - t0) * 1000)
@@ -237,12 +233,9 @@ def test_duration_ms_in_phase_logs() -> None:
     time.sleep(0.008)
     load_ms = int((time.perf_counter() - t0) * 1000)
 
-    log_pipeline.info(
-        f"[air_quality] Extract complete rows=40 duration_ms={extract_ms}")
-    log_pipeline.info(
-        f"[air_quality] Transform complete rows=40 duration_ms={transform_ms}")
-    log_loader.info(
-        f"[air_quality] Load complete rows=40 duration_ms={load_ms}")
+    log_pipeline.info("[air_quality] Extract complete", extra={"rows": 40, "duration_ms": extract_ms})
+    log_pipeline.info("[air_quality] Transform complete", extra={"rows": 40, "duration_ms": transform_ms})
+    log_loader.info("[air_quality] Load complete", extra={"rows": 40, "duration_ms": load_ms})
 
     for rec in captured:
         found, val = _has_duration(rec)
@@ -258,8 +251,7 @@ def test_duration_ms_is_non_negative() -> None:
     run_id_var.set(uuid.uuid4().hex[:8])
 
     for ms in [0, 1, 50, 312, 5000]:
-        log_pipeline.info(
-            f"[air_quality] Extract complete rows=40 duration_ms={ms}")
+        log_pipeline.info("[air_quality] Extract complete", extra={"rows": 40, "duration_ms": ms})
 
     for rec in captured:
         found, val = _has_duration(rec)
@@ -269,12 +261,13 @@ def test_duration_ms_is_non_negative() -> None:
 
 
 def test_duration_ms_in_error_log() -> None:
-    """에러 로그에도 duration_ms가 포함되어야 한다."""
+    """에러 로그에도 duration_ms extra 필드가 포함되어야 한다."""
     print("\n[TEST 8] 에러 로그 duration_ms 포함")
     captured.clear()
 
     run_id_var.set(uuid.uuid4().hex[:8])
-    log_pipeline.error("[subway] Pipeline failed: timeout duration_ms=5123")
+    log_pipeline.error("[subway] Pipeline failed",
+                       extra={"error_type": "TimeoutError", "error_msg": "timeout", "duration_ms": 5123})
 
     for rec in captured:
         found, val = _has_duration(rec)
@@ -283,16 +276,16 @@ def test_duration_ms_in_error_log() -> None:
 
 
 def test_duration_ms_in_http_fetch_log() -> None:
-    """HTTP fetch 로그(base.py)에도 duration_ms가 포함되어야 한다."""
+    """HTTP fetch 로그(base.py)에도 duration_ms extra 필드가 포함되어야 한다."""
     print("\n[TEST 9] HTTP fetch 로그 duration_ms 포함")
     captured.clear()
 
     run_id_var.set(uuid.uuid4().hex[:8])
 
-    # base.py fetch()의 실제 로그 포맷 재현
-    log_base.info("[air_quality] HTTP GET success attempt=1 duration_ms=287")
-    log_base.warning(
-        "[air_quality] Attempt 2 failed: ConnectTimeout duration_ms=5000")
+    log_base.info("[air_quality] HTTP GET success", extra={"attempt": 1, "duration_ms": 287})
+    log_base.warning("[air_quality] Fetch attempt failed",
+                     extra={"error_type": "ConnectTimeout", "error_msg": "timeout",
+                            "attempt": 2, "max_retries": 3, "retry_exhausted": False, "duration_ms": 5000})
 
     for rec in _records_for("etl.base"):
         found, val = _has_duration(rec)
@@ -301,20 +294,17 @@ def test_duration_ms_in_http_fetch_log() -> None:
 
 
 def test_error_type_in_error_log() -> None:
-    """ERROR 로그에 error_type=ExceptionClass 가 포함되어야 한다."""
+    """ERROR 로그에 error_type extra 필드가 포함되어야 한다."""
     print("\n[TEST 10] 에러 로그 error_type 포함")
     captured.clear()
     run_id_var.set(uuid.uuid4().hex[:8])
 
-    # pipeline.py / db_loader.py 실제 포맷 재현
     try:
         raise ValueError("invalid pm10 value")
     except ValueError as e:
         log_pipeline.error(
-            f"[air_quality] Pipeline failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r} "
-            f"duration_ms=312",
+            "[air_quality] Pipeline failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e), "duration_ms": 312},
             exc_info=True,
         )
 
@@ -322,23 +312,20 @@ def test_error_type_in_error_log() -> None:
         raise RuntimeError("DB connection refused")
     except RuntimeError as e:
         log_loader.error(
-            f"[subway] Load failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r}",
+            "[subway] Load failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e)},
             exc_info=True,
         )
 
     for rec in captured:
         et = _get_error_type(rec)
-        _assert(et is not None,
-                f"{rec.name} 로그에 error_type 없음: '{rec.getMessage()}'")
-        _assert(et in ("ValueError", "RuntimeError"),
-                f"error_type='{et}' 예상치 못한 값")
+        _assert(et is not None, f"{rec.name} 로그에 error_type 없음: '{rec.getMessage()}'")
+        _assert(et in ("ValueError", "RuntimeError"), f"error_type='{et}' 예상치 못한 값")
 
 
 def test_error_msg_in_error_log() -> None:
-    """ERROR 로그에 error_msg='...' 가 따옴표로 감싸져 포함되어야 한다."""
-    print("\n[TEST 11] 에러 로그 error_msg 포함 (따옴표)")
+    """ERROR 로그에 error_msg extra 필드가 포함되어야 한다."""
+    print("\n[TEST 11] 에러 로그 error_msg 포함")
     captured.clear()
     run_id_var.set(uuid.uuid4().hex[:8])
 
@@ -346,16 +333,14 @@ def test_error_msg_in_error_log() -> None:
         raise ConnectionError("timeout after 30s")
     except ConnectionError as e:
         log_pipeline.error(
-            f"[weather] Pipeline failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r} "
-            f"duration_ms=5123",
+            "[weather] Pipeline failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e), "duration_ms": 5123},
             exc_info=True,
         )
 
     rec = captured[-1]
     _assert(_has_error_msg(rec), f"error_msg 없음: '{rec.getMessage()}'")
-    _assert("timeout after 30s" in rec.getMessage(), "error_msg 내용 불일치")
+    _assert(rec.error_msg == "timeout after 30s", "error_msg 내용 불일치")
 
 
 def test_exc_info_attached_to_error_log() -> None:
@@ -368,10 +353,8 @@ def test_exc_info_attached_to_error_log() -> None:
         raise KeyError("missing field: station_name")
     except KeyError as e:
         log_pipeline.error(
-            f"[air_quality] Pipeline failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r} "
-            f"duration_ms=88",
+            "[air_quality] Pipeline failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e), "duration_ms": 88},
             exc_info=True,
         )
 
@@ -381,66 +364,75 @@ def test_exc_info_attached_to_error_log() -> None:
 
 
 def test_retry_warning_is_not_exhausted() -> None:
-    """중간 재시도(WARNING)는 retry_exhausted=false 이어야 한다."""
-    print("\n[TEST 13] 중간 재시도 WARNING — retry_exhausted=false")
+    """중간 재시도(WARNING)는 retry_exhausted=False (bool) 이어야 한다."""
+    print("\n[TEST 13] 중간 재시도 WARNING — retry_exhausted=False")
     captured.clear()
     run_id_var.set(uuid.uuid4().hex[:8])
 
-    # base.py 중간 재시도 포맷 재현 (attempt 1/3, 2/3)
     for attempt in range(1, 3):
         try:
             raise TimeoutError("read timeout")
         except TimeoutError as e:
             log_base.warning(
-                f"[air_quality] Fetch attempt {attempt}/3 failed "
-                f"error_type={type(e).__name__} "
-                f"error_msg={str(e)!r} "
-                f"duration_ms=5000 "
-                f"retry_exhausted=false",
+                "[air_quality] Fetch attempt failed",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                    "attempt": attempt,
+                    "max_retries": 3,
+                    "retry_exhausted": False,
+                    "duration_ms": 5000,
+                },
             )
 
     for rec in captured:
-        _assert(rec.levelname == "WARNING",
-                f"중간 재시도는 WARNING 이어야 함: {rec.levelname}")
+        _assert(rec.levelname == "WARNING", f"중간 재시도는 WARNING 이어야 함: {rec.levelname}")
         exhausted = _get_retry_exhausted(rec)
-        _assert(exhausted == "false",
-                f"retry_exhausted='{exhausted}' (expected 'false')")
+        _assert(exhausted == "false", f"retry_exhausted='{exhausted}' (expected 'false')")
         _assert(rec.exc_info is None, "중간 재시도에 exc_info 있으면 안 됨")
 
 
 def test_final_retry_is_error_with_exc_info() -> None:
-    """최종 재시도 실패(ERROR)는 retry_exhausted=true + exc_info 첨부이어야 한다."""
-    print("\n[TEST 14] 최종 재시도 ERROR — retry_exhausted=true + exc_info")
+    """최종 재시도 실패(ERROR)는 retry_exhausted=True + exc_info 첨부이어야 한다."""
+    print("\n[TEST 14] 최종 재시도 ERROR — retry_exhausted=True + exc_info")
     captured.clear()
     run_id_var.set(uuid.uuid4().hex[:8])
 
-    # base.py 최종 실패 포맷 재현 (attempt 3/3, is_last=True)
     try:
         raise TimeoutError("read timeout")
     except TimeoutError as e:
         log_base.error(
-            f"[air_quality] Fetch retry exhausted "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r} "
-            f"attempt=3 max_retries=3 "
-            f"retry_exhausted=true "
-            f"duration_ms=5000",
+            "[air_quality] Fetch retry exhausted",
+            extra={
+                "error_type": type(e).__name__,
+                "error_msg": str(e),
+                "attempt": 3,
+                "max_retries": 3,
+                "retry_exhausted": True,
+                "duration_ms": 5000,
+            },
             exc_info=True,
         )
 
     rec = captured[-1]
     _assert(rec.levelname == "ERROR", f"최종 실패는 ERROR 이어야 함: {rec.levelname}")
     exhausted = _get_retry_exhausted(rec)
-    _assert(exhausted == "true",
-            f"retry_exhausted='{exhausted}' (expected 'true')")
+    _assert(exhausted == "true", f"retry_exhausted='{exhausted}' (expected 'true')")
     _assert(rec.exc_info is not None, "최종 실패에 exc_info 없음")
-    _assert(rec.exc_info[0] is TimeoutError,
-            f"exc_info 타입 불일치: {rec.exc_info[0]}")
+    _assert(rec.exc_info[0] is TimeoutError, f"exc_info 타입 불일치: {rec.exc_info[0]}")
 
 
 # ── JSON 포맷 테스트용 헬퍼 ──────────────────────────────────────────────
 
 KST = timezone(timedelta(hours=9))
+
+_STDLIB_ATTRS = frozenset({
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "thread", "threadName", "taskName",
+    "run_id",
+})
 
 
 class _TestJsonFormatter(jsonlogger.JsonFormatter):
@@ -448,12 +440,14 @@ class _TestJsonFormatter(jsonlogger.JsonFormatter):
 
     def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:
         super().add_fields(log_record, record, message_dict)
-        log_record["timestamp"] = datetime.now(
-            KST).isoformat(timespec="milliseconds")
+        log_record["timestamp"] = datetime.now(KST).isoformat(timespec="milliseconds")
         log_record["level"] = record.levelname
         log_record["logger"] = record.name
         log_record["run_id"] = getattr(record, "run_id", "-")
         log_record["service"] = "etl-backend"
+        for key, value in record.__dict__.items():
+            if key not in _STDLIB_ATTRS and key not in log_record:
+                log_record[key] = value
         if record.exc_info:
             log_record["traceback"] = self.formatException(record.exc_info)
             record.exc_info = None
@@ -477,14 +471,14 @@ def _make_json_logger(name: str) -> tuple[logging.Logger, io.StringIO]:
 
 
 def test_json_output_is_valid_json() -> None:
-    """CustomJsonFormatter 출력이 파싱 가능한 JSON이어야 하고 필수 필드를 포함해야 한다."""
-    print("\n[TEST 15] JSON 포맷 출력 검증")
+    """CustomJsonFormatter 출력이 파싱 가능한 JSON이며, extra 필드가 최상위 키로 포함되어야 한다."""
+    print("\n[TEST 15] JSON 포맷 출력 검증 (extra 필드 최상위 키)")
 
     test_logger, stream = _make_json_logger("test.json.info")
     run_id_var.set(uuid.uuid4().hex[:8])
     expected_run_id = run_id_var.get()
 
-    test_logger.info("[air_quality] Extract complete rows=40 duration_ms=312")
+    test_logger.info("[air_quality] Extract complete", extra={"rows": 40, "duration_ms": 312})
 
     line = stream.getvalue().strip()
     _assert(len(line) > 0, "JSON 출력이 비어있음")
@@ -496,30 +490,34 @@ def test_json_output_is_valid_json() -> None:
         _assert(False, f"JSON 파싱 실패: {e}")
         return
 
-    required_fields = ["timestamp", "level",
-                       "logger", "run_id", "service", "message"]
+    required_fields = ["timestamp", "level", "logger", "run_id", "service", "message"]
     for field in required_fields:
         _assert(field in data, f"필수 필드 누락: '{field}'")
 
-    _assert(data["level"] == "INFO",
-            f"level='{data['level']}' (expected 'INFO')")
+    _assert(data["level"] == "INFO", f"level='{data['level']}' (expected 'INFO')")
     _assert(data["logger"] == "test.json.info", f"logger='{data['logger']}'")
     _assert(data["service"] == "etl-backend", f"service='{data['service']}'")
     _assert(data["run_id"] == expected_run_id,
             f"run_id='{data['run_id']}' (expected '{expected_run_id}')")
     _assert(len(data["run_id"]) == 8, f"run_id 길이 불일치: '{data['run_id']}'")
 
+    # extra 필드가 JSON 최상위 키로 분리되어야 함
+    _assert("rows" in data, "extra 필드 rows가 JSON에 없음")
+    _assert(data["rows"] == 40, f"rows={data.get('rows')} (expected 40)")
+    _assert("duration_ms" in data, "extra 필드 duration_ms가 JSON에 없음")
+    _assert(data["duration_ms"] == 312, f"duration_ms={data.get('duration_ms')} (expected 312)")
+
     # timestamp는 ISO 8601 형식이어야 함
     try:
         datetime.fromisoformat(data["timestamp"])
-        _assert(True, f"timestamp ISO 8601 파싱 성공")
+        _assert(True, "timestamp ISO 8601 파싱 성공")
     except ValueError:
         _assert(False, f"timestamp ISO 8601 파싱 실패: '{data['timestamp']}'")
 
 
 def test_json_traceback_on_error() -> None:
-    """ERROR 로그의 exc_info가 JSON의 'traceback' 필드로 직렬화되어야 한다."""
-    print("\n[TEST 16] JSON ERROR 로그 traceback 필드 직렬화")
+    """ERROR 로그의 exc_info가 JSON의 'traceback' 필드로 직렬화되고, error_type/error_msg도 최상위 키로 포함되어야 한다."""
+    print("\n[TEST 16] JSON ERROR 로그 traceback + error 필드 직렬화")
 
     test_logger, stream = _make_json_logger("test.json.error")
     run_id_var.set(uuid.uuid4().hex[:8])
@@ -528,9 +526,8 @@ def test_json_traceback_on_error() -> None:
         raise RuntimeError("DB connection refused")
     except RuntimeError as e:
         test_logger.error(
-            f"[subway] Load failed "
-            f"error_type={type(e).__name__} "
-            f"error_msg={str(e)!r}",
+            "[subway] Load failed",
+            extra={"error_type": type(e).__name__, "error_msg": str(e)},
             exc_info=True,
         )
 
@@ -548,8 +545,15 @@ def test_json_traceback_on_error() -> None:
     _assert("RuntimeError" in data["traceback"],
             f"traceback에 예외 클래스명 없음: {data['traceback'][:80]}")
     _assert("DB connection refused" in data["traceback"], "traceback에 메시지 없음")
-    _assert(data["level"] == "ERROR",
-            f"level='{data['level']}' (expected 'ERROR')")
+    _assert(data["level"] == "ERROR", f"level='{data['level']}' (expected 'ERROR')")
+
+    # error_type, error_msg도 JSON 최상위 키로 포함되어야 함
+    _assert("error_type" in data, "error_type 필드가 JSON에 없음")
+    _assert(data["error_type"] == "RuntimeError",
+            f"error_type='{data.get('error_type')}' (expected 'RuntimeError')")
+    _assert("error_msg" in data, "error_msg 필드가 JSON에 없음")
+    _assert(data["error_msg"] == "DB connection refused",
+            f"error_msg='{data.get('error_msg')}' (expected 'DB connection refused')")
 
 
 # ── 실행 ──────────────────────────────────────────────────────────────────
@@ -589,7 +593,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     total = len(tests)
     passed = total - failed
-    print(f"결과: {passed}/{total} 통과" +
-          ("" if failed == 0 else f" ({failed}개 실패)"))
+    print(f"결과: {passed}/{total} 통과" + ("" if failed == 0 else f" ({failed}개 실패)"))
     print("=" * 60)
     sys.exit(failed)
