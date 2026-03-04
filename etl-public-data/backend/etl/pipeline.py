@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ from etl.transformers.schema_normalizer import (
     AirQualityNormalizer, WeatherNormalizer, SubwayNormalizer,
 )
 from etl.loaders.db_loader import upsert_records
+from etl.context import run_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             logger.warning(f"Unknown source: {source}")
             continue
 
+        run_id = uuid.uuid4().hex[:8]
+        run_id_var.set(run_id)
         log = _create_run_log(source)
         try:
             # Extract

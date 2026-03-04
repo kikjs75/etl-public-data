@@ -8,13 +8,23 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from config import settings
 from db.migrations import run_migrations
 from etl.pipeline import run_pipeline
+from etl.context import run_id_var
 from quality.report_generator import generate_report
 from api.routes import router
 
+
+class RunIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.run_id = run_id_var.get()
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s",
 )
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(RunIdFilter())
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
