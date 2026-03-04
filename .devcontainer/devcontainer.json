@@ -68,6 +68,7 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+  "postCreateCommand": "if [ -f /usr/local/bin/init-firewall.sh ]; then sudo sed -i -E '/ipset[[:space:]]+add/ { /-exist/! s/(ipset[[:space:]]+add)/\\1 -exist/ }' /usr/local/bin/init-firewall.sh; fi",
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh || true",
   "waitFor": "onCreateCommand"
 }
