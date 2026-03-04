@@ -8,8 +8,9 @@
 5. [데이터베이스 스키마](#5-데이터베이스-스키마)
 6. [REST API 엔드포인트](#6-rest-api-엔드포인트)
 7. [스케줄 자동화](#7-스케줄-자동화)
-8. [설계 패턴](#8-설계-패턴)
-9. [새 데이터 소스 추가 방법](#9-새-데이터-소스-추가-방법)
+8. [로깅 구조](#8-로깅-구조)
+9. [설계 패턴](#10-설계-패턴)
+10. [새 데이터 소스 추가 방법](#11-새-데이터-소스-추가-방법)
 
 ---
 
@@ -39,8 +40,9 @@ backend/
 │   ├── models.py                    # ORM 테이블 정의 (6개)
 │   └── migrations.py                # 수동 마이그레이션 관리
 ├── etl/
+│   ├── context.py                   # run_id ContextVar (스레드별 실행 추적 ID)
 │   ├── base.py                      # 추상 클래스 (BaseExtractor, BaseTransformer)
-│   ├── pipeline.py                  # ETL 오케스트레이션
+│   ├── pipeline.py                  # ETL 오케스트레이션 (run_id 생성, duration_ms 측정)
 │   ├── extractors/
 │   │   ├── air_quality.py           # 미세먼지 API 추출
 │   │   ├── weather.py               # 날씨 API 추출
@@ -58,8 +60,10 @@ backend/
 │   ├── report_generator.py          # HTML/Markdown 리포트 생성
 │   └── templates/
 │       └── report.html              # Jinja2 HTML 템플릿
-└── catalog/
-    └── lineage.py                   # 데이터 카탈로그 + 리니지 정의
+├── catalog/
+│   └── lineage.py                   # 데이터 카탈로그 + 리니지 정의
+└── tests/
+    └── test_run_id_logging.py       # 로깅 동작 검증 테스트 (run_id + duration_ms)
 ```
 
 ### 의존성 관계도
@@ -67,9 +71,11 @@ backend/
 ```
 main.py
   ├── config.py
+  ├── etl/context.py                  ← RunIdFilter가 참조 (run_id 주입)
   ├── db/migrations.py
   │   └── db/database.py ← db/models.py
   ├── etl/pipeline.py
+  │   ├── etl/context.py              ← run_id 생성 및 set
   │   ├── etl/base.py
   │   ├── etl/extractors/*.py
   │   ├── etl/transformers/*.py
@@ -95,39 +101,49 @@ main.py
           ▼
   run_pipeline()  ← etl/pipeline.py
           │
+          ├─ run_id = uuid.uuid4().hex[:8]  ← 소스별 고유 추적 ID 생성
+          ├─ run_id_var.set(run_id)          ← ContextVar에 저장 (스레드 격리)
           ├─ EtlRunLog 생성 (status="running")
           │
-          ├─────────────────────────────────────┐
-          │          EXTRACT 단계               │
-          │  use_mock_data=true → mock_extract() │
-          │  use_mock_data=false → extract()    │
-          └─────────────────────────────────────┘
+          ├─────────────────────────────────────────────────────┐
+          │          EXTRACT 단계                               │
+          │  t0 = perf_counter()                                │
+          │  use_mock_data=true → mock_extract()                │
+          │  use_mock_data=false → extract()                    │
+          │    └─ fetch(): HTTP GET + 재시도, duration_ms 기록  │
+          │  log: Extract complete rows=N duration_ms=N         │
+          └─────────────────────────────────────────────────────┘
           │
           ▼
-  ┌─── TRANSFORM 단계 (순서 중요) ───────────┐
-  │  1. RegionMapper                         │
-  │     sidoName/nx,ny → region (정규화)     │
-  │     "서울" → "서울특별시"               │
-  │                                          │
-  │  2. SchemaNormalizer                     │
-  │     API 필드명 → 내부 필드명            │
-  │     문자열 → float/int/datetime 타입변환│
-  │     등급 코드 → 한글 (1→"좋음" 등)     │
-  │                                          │
-  │  3. MissingValueInterpolator             │
-  │     None/""/"-" → 이전값 또는 0.0      │
-  └──────────────────────────────────────────┘
+  ┌─── TRANSFORM 단계 (순서 중요) ───────────────────────────┐
+  │  t0 = perf_counter()                                     │
+  │  1. RegionMapper                                         │
+  │     sidoName/nx,ny → region (정규화)                     │
+  │     "서울" → "서울특별시"                               │
+  │                                                          │
+  │  2. SchemaNormalizer                                     │
+  │     API 필드명 → 내부 필드명                            │
+  │     문자열 → float/int/datetime 타입변환                │
+  │     등급 코드 → 한글 (1→"좋음" 등)                     │
+  │                                                          │
+  │  3. MissingValueInterpolator                             │
+  │     None/""/"-" → 이전값 또는 0.0                      │
+  │  log: Transform complete rows=N duration_ms=N            │
+  └──────────────────────────────────────────────────────────┘
           │
           ▼
-  ┌─── LOAD 단계 ─────────────────────────────┐
-  │  collected_at = 현재 KST 시간 추가        │
-  │  INSERT ... ON CONFLICT DO UPDATE (UPSERT)│
-  │  중복키: (station_name, measured_at) 등   │
-  └──────────────────────────────────────────┘
+  ┌─── LOAD 단계 ─────────────────────────────────────────────┐
+  │  t0 = perf_counter()                                      │
+  │  collected_at = 현재 KST 시간 추가                        │
+  │  INSERT ... ON CONFLICT DO UPDATE (UPSERT)                │
+  │  중복키: (station_name, measured_at) 등                   │
+  │  log: Load complete rows=N duration_ms=N                  │
+  └───────────────────────────────────────────────────────────┘
           │
           ▼
   EtlRunLog 업데이트
   (status="success"/"failed", 레코드 수 기록)
+  log: Pipeline complete extracted=N loaded=N duration_ms=N
 ```
 
 ### 소스별 수집 현황
@@ -146,9 +162,19 @@ main.py
 
 ### main.py — FastAPI 진입점
 
-**역할:** 앱 시작/종료 처리, APScheduler 등록, CORS 설정
+**역할:** 앱 시작/종료 처리, APScheduler 등록, CORS 설정, 로깅 초기화
 
 ```python
+# 로깅 초기화 (앱 최상단)
+class RunIdFilter(logging.Filter):
+    def filter(self, record):
+        record.run_id = run_id_var.get()  # ContextVar에서 run_id 읽어 레코드에 주입
+        return True
+
+logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s")
+for handler in logging.getLogger().handlers:
+    handler.addFilter(RunIdFilter())  # 루트 핸들러에 등록 → 모든 자식 로거에 자동 전파
+
 # lifespan: 앱 시작 시 실행
 1. run_migrations()      # 스키마 자동 생성/업그레이드
 2. scheduler.add_job()   # ETL + 품질리포트 cron 등록
@@ -157,6 +183,9 @@ main.py
 # 앱 종료 시
 scheduler.shutdown()
 ```
+
+> **필터를 logger가 아닌 handler에 등록하는 이유:** 자식 로거(`etl.pipeline` 등)의 레코드가
+> 루트로 전파될 때 루트 logger의 filter는 실행되지 않고 루트 handler의 filter만 실행된다.
 
 **등록된 cron 작업:**
 
@@ -245,6 +274,20 @@ MIGRATIONS = [
 
 ---
 
+### etl/context.py — run_id 컨텍스트 변수
+
+**역할:** 스레드별 독립적인 run_id를 관리하는 ContextVar 정의
+
+```python
+from contextvars import ContextVar
+run_id_var: ContextVar[str] = ContextVar("run_id", default="-")
+```
+
+- APScheduler 백그라운드 스레드는 각자 독립된 컨텍스트를 가지므로, 소스별 run_id가 섞이지 않음
+- 파이프라인 외부(서버 시작, 스케줄러 등록 등)에서는 기본값 `"-"` 사용
+
+---
+
 ### etl/base.py — 추상 기본 클래스
 
 **역할:** 모든 Extractor/Transformer가 상속해야 하는 추상 클래스 정의
@@ -260,6 +303,9 @@ def mock_extract(self) -> list[dict]:  # 테스트용 Mock 데이터
 # 이미 구현된 메서드 (상속받아 사용)
 def fetch(url, params):
     # max_retries(기본 3)회 재시도
+    # 각 시도마다 t0 = perf_counter() 로 duration_ms 측정
+    # 성공: log INFO  "[source] HTTP GET success attempt=N duration_ms=N"
+    # 실패: log WARNING "[source] Attempt N failed: {e} duration_ms=N"
     # 실패 시 2^n초 대기 (exponential backoff)
     # 최종 실패 시 RuntimeError
     # 성공 시 응답 후 rate_limit_delay(기본 1초) 대기
@@ -291,15 +337,29 @@ PIPELINE_CONFIG = {
 }
 
 # run_pipeline() 실행 순서 (소스별 반복)
-1. _create_run_log(source)          # EtlRunLog 생성 (started_at=KST)
-2. API 키 가져오기 (settings에서)
-3. use_mock_data=true → mock_extract(), false → extract()
-4. region_mapper.transform(raw_data)
-5. normalizer.transform(mapped)
-6. interpolator.transform(normalized)
-7. upsert_records(source, interpolated)
-8. _update_run_log(log_id, "success", extracted, loaded)
+1. run_id = uuid.uuid4().hex[:8]    # 소스별 고유 추적 ID 생성
+   run_id_var.set(run_id)           # ContextVar에 저장
+2. _create_run_log(source)          # EtlRunLog 생성 (started_at=KST)
+   t_total = perf_counter()         # 전체 소요시간 측정 시작
+3. API 키 가져오기 (settings에서)
+4. t0 = perf_counter()
+   use_mock_data=true → mock_extract(), false → extract()
+   log: "[source] Extract complete rows=N duration_ms=N"
+5. t0 = perf_counter()
+   region_mapper.transform(raw_data)
+   normalizer.transform(mapped)
+   interpolator.transform(normalized)
+   log: "[source] Transform complete rows=N duration_ms=N"
+6. t0 = perf_counter()
+   upsert_records(source, interpolated)
+   log: "[source] Load complete rows=N duration_ms=N"
+7. _update_run_log(log_id, "success", extracted, loaded)
+   log: "[source] Pipeline complete extracted=N loaded=N duration_ms=N"
    └─ 실패 시: _update_run_log(log_id, "failed", error_message=...)
+              log: "[source] Pipeline failed: {e} duration_ms=N"
+
+# _ms(t_start) 헬퍼
+int((time.perf_counter() - t_start) * 1000)  # float초 → int밀리초
 ```
 
 ---
@@ -742,7 +802,50 @@ cron 형식 예시:
 
 ---
 
-## 8. 설계 패턴
+## 8. 로깅 구조
+
+### 로그 포맷
+
+```
+%(asctime)s [%(levelname)s] %(name)s run_id=%(run_id)s: %(message)s
+```
+
+예시:
+```
+2026-03-04 10:30:00,123 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Extract complete rows=40 duration_ms=312
+2026-03-04 10:30:00,435 [WARNING] etl.base              run_id=a1b2c3d4: [air_quality] Attempt 1 failed: timeout duration_ms=5000
+2026-03-04 10:30:00,440 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Transform complete rows=40 duration_ms=5
+2026-03-04 10:30:00,528 [INFO]    etl.loaders.db_loader run_id=a1b2c3d4: [air_quality] Load complete rows=40 duration_ms=88
+2026-03-04 10:30:00,529 [INFO]    etl.pipeline          run_id=a1b2c3d4: [air_quality] Pipeline complete extracted=40 loaded=40 duration_ms=406
+```
+
+### run_id 전파 흐름
+
+```
+pipeline.py: run_id_var.set("a1b2c3d4")
+     │
+     ├─ etl.pipeline          logger → run_id=a1b2c3d4  ✓
+     ├─ etl.base              logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
+     └─ etl.loaders.db_loader logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
+```
+
+- `RunIdFilter`가 루트 **핸들러**에 등록되어, 모든 자식 로거가 루트로 전파할 때 자동 주입
+- 파이프라인 외부(서버 시작 등)는 ContextVar 기본값 `"-"` 사용
+
+### duration_ms 측정 포인트
+
+| 위치 | 측정 대상 | 로그 레벨 |
+|------|----------|----------|
+| `etl/pipeline.py` Extract | API 호출 전체 | INFO |
+| `etl/pipeline.py` Transform | 3단계 변환 합산 | INFO |
+| `etl/pipeline.py` Load | DB upsert 전체 | INFO |
+| `etl/pipeline.py` 전체 | 소스 1개 파이프라인 합산 | INFO |
+| `etl/pipeline.py` 실패 | 실패 시점까지 합산 | ERROR |
+| `etl/base.py` fetch | HTTP 요청 1회 (재시도별) | INFO/WARNING |
+
+---
+
+## 10. 설계 패턴
 
 ### Template Method Pattern
 `BaseExtractor`와 `BaseTransformer`가 골격을 정의하고, 각 데이터 소스 클래스가 세부 구현.
@@ -783,7 +886,7 @@ def trigger_etl(background_tasks: BackgroundTasks):
 
 ---
 
-## 9. 새 데이터 소스 추가 방법
+## 11. 새 데이터 소스 추가 방법
 
 총 7단계 작업 필요:
 

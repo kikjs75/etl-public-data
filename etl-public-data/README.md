@@ -66,11 +66,12 @@ etl-public-data/
 │   │   ├── models.py                # ORM 모델
 │   │   └── migrations.py            # 스키마 버전 관리
 │   ├── etl/
+│   │   ├── context.py               # run_id ContextVar (스레드별 추적 ID)
 │   │   ├── base.py                  # BaseExtractor / BaseTransformer
 │   │   ├── extractors/              # 미세먼지, 날씨, 지하철 추출기
 │   │   ├── transformers/            # 결측치 보간, 지역 매핑, 스키마 정규화
 │   │   ├── loaders/db_loader.py     # DB upsert
-│   │   └── pipeline.py              # ETL 오케스트레이션
+│   │   └── pipeline.py              # ETL 오케스트레이션 (run_id 생성, duration_ms 측정)
 │   ├── quality/
 │   │   ├── checker.py               # 품질 검사 (null률, 이상치, 중복)
 │   │   ├── report_generator.py      # HTML/Markdown 리포트 생성
@@ -79,6 +80,8 @@ etl-public-data/
 │   └── api/
 │       ├── routes.py                # REST API 엔드포인트
 │       └── schemas.py               # Pydantic 스키마
+│   └── tests/
+│       └── test_run_id_logging.py   # 로깅 동작 검증 테스트
 └── frontend/
     └── src/
         ├── App.tsx
@@ -111,6 +114,29 @@ etl-public-data/
 | ---------------- | ---------- | ---------------------------------------------- |
 | ETL 파이프라인   | 매시 정각  | `ETL_CRON_HOUR`, `ETL_CRON_MINUTE`             |
 | 품질 리포트 생성 | 매일 01:00 | `QUALITY_REPORT_HOUR`, `QUALITY_REPORT_MINUTE` |
+
+## 로깅 구조
+
+모든 백엔드 로그는 아래 포맷으로 출력됩니다.
+
+```
+2026-03-04 10:30:00,123 [INFO] etl.pipeline run_id=a1b2c3d4: [air_quality] Extract complete rows=40 duration_ms=312
+```
+
+| 필드 | 설명 |
+| ---- | ---- |
+| `run_id` | ETL 소스 실행 단위 추적 ID (8자리 hex). 파이프라인 외부 로그는 `-` |
+| `duration_ms` | 단계별 소요시간(ms). Extract / Transform / Load / 전체 / HTTP 요청별 측정 |
+
+- `etl/context.py`의 `ContextVar`로 스레드별 run_id를 관리하므로 동시 실행 시에도 섞이지 않음
+- `main.py`의 `RunIdFilter`가 루트 핸들러에 등록되어 모든 레이어(`etl.base`, `etl.loaders.db_loader` 등)에 자동 주입
+
+로깅 검증 테스트 실행:
+
+```bash
+cd backend
+python -m tests.test_run_id_logging
+```
 
 ## 품질 검사 항목
 
