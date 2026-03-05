@@ -129,8 +129,22 @@ etl-public-data/
 모든 백엔드 로그는 JSON 형식으로 출력됩니다 (`python-json-logger` 사용). `extra={}` 로 전달한 필드는 JSON 최상위 키로 분리됩니다.
 
 ```json
-{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline.extract", "run_id": "a1b2c3d4", "service": "etl-backend"}
 ```
+
+### 로거 계층
+
+| 로거 | 위치 | 담당 |
+| ---- | ---- | ---- |
+| `etl.pipeline.extract` | `etl/pipeline.py` | Extract 단계 완료 요약 |
+| `etl.pipeline.transform` | `etl/pipeline.py` | Transform 단계 완료 요약 |
+| `etl.pipeline.load` | `etl/pipeline.py` | Load 단계 완료 요약 |
+| `etl.pipeline` | `etl/pipeline.py` | Pipeline complete / failed |
+| `etl.base` | `etl/base.py` | HTTP API 호출 세부 (재시도 포함) |
+| `etl.loaders.db_loader` | `etl/loaders/db_loader.py` | DB upsert 세부 |
+
+> `etl.base`는 Extract의 세부 동작, `etl.loaders.db_loader`는 Load의 세부 동작.
+> Kibana에서 `logger: etl.*` 로 전체 ETL 로그를 한번에 조회 가능.
 
 **고정 필드** (모든 로그):
 
@@ -138,7 +152,7 @@ etl-public-data/
 | ---- | --------- | ---- |
 | `timestamp` | 전체 로그 | KST 기준 ISO 8601 타임스탬프 |
 | `level` | 전체 로그 | INFO / WARNING / ERROR |
-| `logger` | 전체 로그 | 로거 계층 (예: `etl.pipeline`) |
+| `logger` | 전체 로그 | 로거 계층 (예: `etl.pipeline.extract`) |
 | `run_id` | 전체 로그 | ETL 소스 실행 단위 추적 ID (8자리 hex). 파이프라인 외부는 `-` |
 | `service` | 전체 로그 | 고정값 `"etl-backend"` |
 
@@ -154,7 +168,7 @@ etl-public-data/
 | `retry_exhausted` | HTTP 재시도 로그 | 중간 실패 `false` / 최종 실패 `true` (bool) |
 
 - `etl/context.py`의 `ContextVar`로 스레드별 run_id를 관리하므로 동시 실행 시에도 섞이지 않음
-- `main.py`의 `RunIdFilter`가 루트 핸들러에 등록되어 모든 레이어(`etl.base`, `etl.loaders.db_loader` 등)에 자동 주입
+- `main.py`의 `RunIdFilter`가 루트 핸들러에 등록되어 모든 서브 로거(`etl.pipeline.*`, `etl.base`, `etl.loaders.db_loader` 등)에 자동 주입
 - Kibana에서 `duration_ms`, `error_type`, `retry_exhausted` 등을 필드 직접 필터/집계로 활용 가능
 
 로깅 검증 테스트 실행:

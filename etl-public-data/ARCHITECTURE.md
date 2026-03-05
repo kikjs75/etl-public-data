@@ -893,10 +893,23 @@ cron 형식 예시:
 |------|------|------|
 | `timestamp` | `datetime.now(KST).isoformat()` | KST 기준 ISO 8601 (밀리초까지) |
 | `level` | `record.levelname` | INFO / WARNING / ERROR |
-| `logger` | `record.name` | 로거 계층 (예: `etl.pipeline`) |
+| `logger` | `record.name` | 로거 계층 (예: `etl.pipeline.extract`) |
 | `run_id` | `ContextVar` | ETL 소스 실행 단위 추적 ID (8자리 hex), 외부는 `"-"` |
 | `service` | 고정값 | `"etl-backend"` |
 | `message` | 로그 메시지 문자열 | `logger.info("...")` 의 첫 번째 인수 |
+
+#### 로거 계층 구조
+
+| 로거 | 위치 | 담당 |
+|------|------|------|
+| `etl.pipeline.extract` | `etl/pipeline.py` | Extract 단계 완료 요약 |
+| `etl.pipeline.transform` | `etl/pipeline.py` | Transform 단계 완료 요약 |
+| `etl.pipeline.load` | `etl/pipeline.py` | Load 단계 완료 요약 |
+| `etl.pipeline` | `etl/pipeline.py` | Pipeline complete / failed |
+| `etl.base` | `etl/base.py` | HTTP API 호출 세부 (Extract의 세부 동작) |
+| `etl.loaders.db_loader` | `etl/loaders/db_loader.py` | DB upsert 세부 (Load의 세부 동작) |
+
+> Kibana에서 `logger: etl.*` 로 전체 ETL 로그 조회, `logger: etl.pipeline.*` 로 단계 요약만 조회 가능.
 
 **extra 필드** (로그 종류별 추가):
 
@@ -915,10 +928,10 @@ cron 형식 예시:
 
 #### 예시 — 정상 흐름:
 ```json
-{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Extract complete", "rows": 40, "duration_ms": 312, "timestamp": "2026-03-04T10:30:00.123+09:00", "level": "INFO", "logger": "etl.pipeline.extract", "run_id": "a1b2c3d4", "service": "etl-backend"}
 {"message": "[air_quality] HTTP GET success", "attempt": 1, "duration_ms": 287, "timestamp": "2026-03-04T10:30:00.435+09:00", "level": "INFO", "logger": "etl.base", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Transform complete", "rows": 40, "duration_ms": 5, "timestamp": "2026-03-04T10:30:00.440+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
-{"message": "[air_quality] Load complete", "rows": 40, "duration_ms": 88, "timestamp": "2026-03-04T10:30:00.528+09:00", "level": "INFO", "logger": "etl.loaders.db_loader", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Transform complete", "rows": 40, "duration_ms": 5, "timestamp": "2026-03-04T10:30:00.440+09:00", "level": "INFO", "logger": "etl.pipeline.transform", "run_id": "a1b2c3d4", "service": "etl-backend"}
+{"message": "[air_quality] Load complete", "rows": 40, "duration_ms": 88, "timestamp": "2026-03-04T10:30:00.528+09:00", "level": "INFO", "logger": "etl.pipeline.load", "run_id": "a1b2c3d4", "service": "etl-backend"}
 {"message": "[air_quality] Pipeline complete", "extracted": 40, "loaded": 40, "duration_ms": 406, "timestamp": "2026-03-04T10:30:00.529+09:00", "level": "INFO", "logger": "etl.pipeline", "run_id": "a1b2c3d4", "service": "etl-backend"}
 ```
 
@@ -937,9 +950,12 @@ cron 형식 예시:
 ```
 pipeline.py: run_id_var.set("a1b2c3d4")
      │
-     ├─ etl.pipeline          logger → run_id=a1b2c3d4  ✓
-     ├─ etl.base              logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
-     └─ etl.loaders.db_loader logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
+     ├─ etl.pipeline.extract   logger → run_id=a1b2c3d4  ✓
+     ├─ etl.pipeline.transform logger → run_id=a1b2c3d4  ✓
+     ├─ etl.pipeline.load      logger → run_id=a1b2c3d4  ✓
+     ├─ etl.pipeline           logger → run_id=a1b2c3d4  ✓
+     ├─ etl.base               logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
+     └─ etl.loaders.db_loader  logger → run_id=a1b2c3d4  ✓  (자동, 코드 수정 없음)
 ```
 
 - `RunIdFilter`가 루트 **핸들러**에 등록되어, 모든 자식 로거가 루트로 전파할 때 자동 주입
@@ -947,14 +963,14 @@ pipeline.py: run_id_var.set("a1b2c3d4")
 
 ### duration_ms 측정 포인트
 
-| 위치 | 측정 대상 | 로그 레벨 |
-|------|----------|----------|
-| `etl/pipeline.py` Extract | API 호출 전체 | INFO |
-| `etl/pipeline.py` Transform | 3단계 변환 합산 | INFO |
-| `etl/pipeline.py` Load | DB upsert 전체 | INFO |
-| `etl/pipeline.py` 전체 | 소스 1개 파이프라인 합산 | INFO |
-| `etl/pipeline.py` 실패 | 실패 시점까지 합산 | ERROR |
-| `etl/base.py` fetch | HTTP 요청 1회 (재시도별) | INFO / WARNING / ERROR |
+| 위치 | 로거 | 측정 대상 | 로그 레벨 |
+|------|------|----------|----------|
+| `etl/pipeline.py` Extract | `etl.pipeline.extract` | API 호출 전체 | INFO |
+| `etl/pipeline.py` Transform | `etl.pipeline.transform` | 3단계 변환 합산 | INFO |
+| `etl/pipeline.py` Load | `etl.pipeline.load` | DB upsert 전체 | INFO |
+| `etl/pipeline.py` 전체 | `etl.pipeline` | 소스 1개 파이프라인 합산 | INFO |
+| `etl/pipeline.py` 실패 | `etl.pipeline` | 실패 시점까지 합산 | ERROR |
+| `etl/base.py` fetch | `etl.base` | HTTP 요청 1회 (재시도별) | INFO / WARNING / ERROR |
 
 ### 에러 로그 표준화 필드
 

@@ -19,6 +19,9 @@ from etl.loaders.db_loader import upsert_records
 from etl.context import run_id_var
 
 logger = logging.getLogger(__name__)
+logger_extract = logging.getLogger(f"{__name__}.extract")
+logger_transform = logging.getLogger(f"{__name__}.transform")
+logger_load = logging.getLogger(f"{__name__}.load")
 
 
 PIPELINE_CONFIG = {
@@ -74,12 +77,12 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             t0 = time.perf_counter()
             if settings.use_mock_data or not api_key:
                 raw_data = extractor.mock_extract()
-                logger.info(f"[{source}] Using mock data",
-                            extra={"rows": len(raw_data), "duration_ms": _ms(t0), "mock": True})
+                logger_extract.info(f"[{source}] Using mock data",
+                                    extra={"rows": len(raw_data), "duration_ms": _ms(t0), "mock": True})
             else:
                 raw_data = extractor.extract()
-                logger.info(f"[{source}] Extract complete",
-                            extra={"rows": len(raw_data), "duration_ms": _ms(t0)})
+                logger_extract.info(f"[{source}] Extract complete",
+                                    extra={"rows": len(raw_data), "duration_ms": _ms(t0)})
 
             extractor.close()
 
@@ -88,14 +91,14 @@ def run_pipeline(sources: list[str] | None = None) -> dict[str, Any]:
             mapped = region_mapper.transform(raw_data)
             normalized = config["normalizer"].transform(mapped)
             interpolated = config["interpolator"].transform(normalized)
-            logger.info(f"[{source}] Transform complete",
-                        extra={"rows": len(interpolated), "duration_ms": _ms(t0)})
+            logger_transform.info(f"[{source}] Transform complete",
+                                  extra={"rows": len(interpolated), "duration_ms": _ms(t0)})
 
             # Load
             t0 = time.perf_counter()
             loaded_count = upsert_records(source, interpolated)
-            logger.info(f"[{source}] Load complete",
-                        extra={"rows": loaded_count, "duration_ms": _ms(t0)})
+            logger_load.info(f"[{source}] Load complete",
+                             extra={"rows": loaded_count, "duration_ms": _ms(t0)})
 
             _update_run_log(log.id, "success", len(raw_data), loaded_count)
             logger.info(f"[{source}] Pipeline complete",
