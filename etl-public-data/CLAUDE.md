@@ -63,7 +63,7 @@ Alembic 미사용. `backend/db/migrations.py`의 `MIGRATIONS` 리스트에 `{"ve
 | 단계 | 구성 | Logstash output | 상태 |
 |------|------|----------------|------|
 | Stage 1 | Filebeat + Logstash | stdout (rubydebug) | ✅ 완료 |
-| Stage 2 | + Elasticsearch | elasticsearch | 🔲 미완료 |
+| Stage 2 | + Elasticsearch | elasticsearch | ✅ 완료 |
 | Stage 3 | + Kibana | elasticsearch | 🔲 미완료 |
 
 ### 관련 파일
@@ -75,7 +75,16 @@ Alembic 미사용. `backend/db/migrations.py`의 `MIGRATIONS` 리스트에 `{"ve
 - Filebeat의 `drop_event` 대신 Logstash 필터에서 처리 권장
 - ETL 실행 시 `run_id`, `rows`, `duration_ms` 등 필드가 Logstash stdout에서 확인됨
 
-### Stage 2 다음 작업
-- `elk/logstash/pipeline/logstash.conf`의 output을 elasticsearch로 변경
-- `docker-compose.yml`에 elasticsearch 서비스 추가
-- 검증: `curl localhost:9200/_cat/indices`로 인덱스 확인
+### Stage 2 완료 사항
+- `docker-compose.yml`에 elasticsearch:8.12.2 서비스 추가 (single-node, security disabled)
+- logstash가 elasticsearch healthcheck 통과 후 시작 (depends_on)
+- `elk/logstash/pipeline/logstash.conf` output에 elasticsearch 추가 (인덱스: `etl-logs-YYYY.MM.dd`)
+- stdout 제거 (Logstash 자체 로그 재수집 루프 방지)
+- Logstash 필터: `_jsonparsefailure` 태그 이벤트 드롭 + `service.name` 존재 이벤트 드롭 (ELK 자체 로그 제거)
+- `skip_on_invalid_json` 제거 → JSON 파싱 실패 시 `_jsonparsefailure` 태그 정상 부여
+- 확인된 ETL 필드: `run_id`, `service`(string), `logger`, `level`, `duration_ms`, `rows`, `extracted`, `loaded`
+
+### Stage 3 다음 작업
+- `docker-compose.yml`에 kibana:8.12.2 서비스 추가
+- Kibana에서 `etl-logs-*` 인덱스 패턴 설정
+- 검증: `http://localhost:5601` 접속 후 Discover에서 로그 확인
