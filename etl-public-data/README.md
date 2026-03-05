@@ -251,6 +251,8 @@ python3 elk/kibana/create_dashboard.py
 http://localhost:5601/app/dashboards → "ETL 파이프라인 대시보드"
 ```
 
+![ETL 파이프라인 대시보드](docs/images/kibana-dashboard.jpg)
+
 생성되는 패널 4개:
 
 | 패널 | 종류 | 설명 |
