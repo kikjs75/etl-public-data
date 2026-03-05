@@ -155,6 +155,67 @@ cd backend
 python -m tests.test_run_id_logging
 ```
 
+## ELK 스택
+
+Filebeat → Logstash → Elasticsearch → Kibana 파이프라인으로 ETL 로그를 수집·시각화합니다.
+
+| 서비스          | URL                    | 설명                        |
+| --------------- | ---------------------- | --------------------------- |
+| Elasticsearch   | http://localhost:9200  | 로그 저장소                 |
+| Kibana          | http://localhost:5601  | 로그 검색 및 시각화         |
+
+인덱스 패턴: `etl-logs-*` (일별 인덱스, 예: `etl-logs-2026.03.05`)
+
+### Kibana Discover — KQL 검색 문법
+
+**기본 필드 검색**
+```
+level: "ERROR"
+service: "etl-backend"
+logger: "etl.pipeline"
+```
+
+**특정 run_id 전체 추적**
+```
+run_id: "dcde5806"
+```
+
+**AND / OR / NOT**
+```
+level: "ERROR" and logger: "etl.pipeline"
+level: "INFO" or level: "WARN"
+not level: "INFO"
+```
+
+**와일드카드**
+```
+message: "*subway*"
+logger: "etl.*"
+```
+
+**숫자 범위**
+```
+duration_ms > 1000
+rows >= 500 and rows <= 1000
+```
+
+**필드 존재 여부**
+```
+run_id: *
+```
+
+**활용 예시**
+```
+# 느린 ETL 찾기
+duration_ms > 2000
+
+# 지하철 관련 에러
+message: "*subway*" and level: "ERROR"
+
+# 특정 실행 전체 로그
+run_id: "dcde5806"
+```
+
 ## 품질 검사 항목
 
 - **Null률**: 필드별 결측치 비율
