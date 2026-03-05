@@ -64,7 +64,7 @@ Alembic 미사용. `backend/db/migrations.py`의 `MIGRATIONS` 리스트에 `{"ve
 |------|------|----------------|------|
 | Stage 1 | Filebeat + Logstash | stdout (rubydebug) | ✅ 완료 |
 | Stage 2 | + Elasticsearch | elasticsearch | ✅ 완료 |
-| Stage 3 | + Kibana | elasticsearch | 🔲 미완료 |
+| Stage 3 | + Kibana | elasticsearch | ✅ 완료 |
 
 ### 관련 파일
 - `elk/filebeat/filebeat.yml` — container input, Logstash 출력
@@ -84,7 +84,7 @@ Alembic 미사용. `backend/db/migrations.py`의 `MIGRATIONS` 리스트에 `{"ve
 - `skip_on_invalid_json` 제거 → JSON 파싱 실패 시 `_jsonparsefailure` 태그 정상 부여
 - 확인된 ETL 필드: `run_id`, `service`(string), `logger`, `level`, `duration_ms`, `rows`, `extracted`, `loaded`
 
-### Stage 3 다음 작업
-- `docker-compose.yml`에 kibana:8.12.2 서비스 추가
-- Kibana에서 `etl-logs-*` 인덱스 패턴 설정
-- 검증: `http://localhost:5601` 접속 후 Discover에서 로그 확인
+### Stage 3 완료 사항
+- `docker-compose.yml`에 kibana:8.12.2 서비스 추가 (포트 5601)
+- elasticsearch healthcheck 통과 후 시작하도록 depends_on 설정
+- 검증: `http://localhost:5601` 접속 → Discover → 인덱스 패턴 `etl-logs-*` 생성
