@@ -225,6 +225,29 @@ message: "*subway*" and level: "ERROR"
 run_id: "dcde5806"
 ```
 
+### Kibana 대시보드
+
+`elk/kibana/create_dashboard.py` 스크립트로 대시보드를 자동 생성합니다.
+
+```bash
+# devcontainer 내부에서 실행
+python3 elk/kibana/create_dashboard.py
+
+# 대시보드 URL
+http://localhost:5601/app/dashboards → "ETL 파이프라인 대시보드"
+```
+
+생성되는 패널 4개:
+
+| 패널 | 종류 | 설명 |
+| ---- | ---- | ---- |
+| ETL Pipeline 총 실행 횟수 | Metric | `etl.pipeline` 로거 이벤트 수 |
+| ETL 로그 레벨 분포 | Donut 차트 | INFO / WARNING / ERROR 비율 |
+| ETL duration_ms 추이 | Line 차트 | Pipeline 단계 평균 소요시간 추이 |
+| ETL 단계별 로그 수 | Stacked Bar | `etl.*` 로거별 시계열 로그 수 |
+
+> 스크립트를 재실행하면 기존 대시보드를 덮어씁니다 (`overwrite=true`).
+
 ## 품질 검사 항목
 
 - **Null률**: 필드별 결측치 비율
