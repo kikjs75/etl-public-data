@@ -58,9 +58,11 @@ services:
       - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
     ports:
       - "5044:5044"
+    cpus: 0.5
     environment:
       LS_JAVA_OPTS: "-Xmx256m -Xms256m"
       XPACK_MONITORING_ENABLED: "false"
+      PIPELINE_WORKERS: "1"
     depends_on:
       elasticsearch:
         condition: service_healthy
