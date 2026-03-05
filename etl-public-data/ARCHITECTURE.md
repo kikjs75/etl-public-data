@@ -24,7 +24,11 @@
 | DB | PostgreSQL 15 + SQLAlchemy ORM |
 | 스케줄링 | APScheduler (cron 기반) |
 | HTTP 클라이언트 | httpx (재시도 지원) |
-| 구조화 로깅 | python-json-logger (JSON 포맷, ELK 연동 대비) |
+| 구조화 로깅 | python-json-logger (JSON 포맷) |
+| 로그 수집 | Filebeat 8.12.2 (Docker 컨테이너 로그 수집) |
+| 로그 파이프라인 | Logstash 8.12.2 (JSON 파싱, 필터링) |
+| 로그 저장소 | Elasticsearch 8.12.2 (인덱스: `etl-logs-YYYY.MM.dd`) |
+| 로그 시각화 | Kibana 8.12.2 (Discover, Dashboard) |
 | 리포트 템플릿 | Jinja2 (HTML/Markdown) |
 | 인프라 | Docker Compose |
 
@@ -33,6 +37,13 @@
 ## 2. 전체 구조
 
 ```
+elk/
+├── filebeat/
+│   └── filebeat.yml                 # Docker 컨테이너 로그 수집 → Logstash
+└── logstash/
+    └── pipeline/
+        └── logstash.conf            # JSON 파싱, ELK 자체 로그 필터링 → Elasticsearch
+
 backend/
 ├── main.py                          # FastAPI 진입점 + 스케줄러
 ├── config.py                        # 환경변수 설정 (.env 로드)
@@ -837,6 +848,38 @@ cron 형식 예시:
 ---
 
 ## 8. 로깅 구조
+
+### 로그 파이프라인 (ELK)
+
+```
+[backend 컨테이너]
+  python-json-logger → stdout/stderr (JSON 한 줄)
+          │
+          ▼ Docker 컨테이너 로그 파일
+  /var/lib/docker/containers/*/*.log
+          │
+          ▼
+  [Filebeat]
+  - 모든 Docker 컨테이너 로그 수집
+  - Logstash로 전송 (포트 5044)
+          │
+          ▼
+  [Logstash]
+  - JSON 파싱 (message 필드)
+  - _jsonparsefailure 이벤트 드롭 (비구조화 텍스트)
+  - service.name 존재 이벤트 드롭 (ELK 자체 로그)
+  → ETL 백엔드 로그만 통과
+          │
+          ▼
+  [Elasticsearch]
+  - 인덱스: etl-logs-YYYY.MM.dd (일별)
+  - run_id, level, logger, duration_ms 등 필드 직접 집계 가능
+          │
+          ▼
+  [Kibana]
+  - Discover: KQL로 로그 검색/필터
+  - Dashboard: ETL 실행 현황 시각화
+```
 
 ### 로그 포맷 (JSON)
 

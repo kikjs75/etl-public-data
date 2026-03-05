@@ -9,6 +9,7 @@
 | Backend  | Python 3.11, FastAPI, SQLAlchemy, APScheduler, python-json-logger |
 | DB       | PostgreSQL 15                                                     |
 | Frontend | React 18, Vite, Recharts, React Router                            |
+| Logging  | Filebeat, Logstash, Elasticsearch, Kibana (ELK 8.12.2)            |
 | Infra    | Docker Compose (v1.25.0 이상, 파일 포맷 v3.7)                    |
 
 ## 빠른 시작
@@ -32,11 +33,13 @@ docker-compose up --build
 
 3개 서비스가 기동됩니다:
 
-| 서비스     | URL                   | 설명                       |
-| ---------- | --------------------- | -------------------------- |
-| Frontend   | http://localhost:3000 | React 대시보드             |
-| Backend    | http://localhost:8000 | FastAPI (Swagger: `/docs`) |
-| PostgreSQL | localhost:5432        | DB                         |
+| 서비스        | URL                   | 설명                       |
+| ------------- | --------------------- | -------------------------- |
+| Frontend      | http://localhost:3000 | React 대시보드             |
+| Backend       | http://localhost:8000 | FastAPI (Swagger: `/docs`) |
+| PostgreSQL    | localhost:5432        | DB                         |
+| Kibana        | http://localhost:5601 | 로그 시각화                |
+| Elasticsearch | http://localhost:9200 | 로그 저장소                |
 
 ### 3. ETL 수동 실행
 
@@ -82,6 +85,12 @@ etl-public-data/
 │       └── schemas.py               # Pydantic 스키마
 │   └── tests/
 │       └── test_run_id_logging.py   # 로깅 동작 검증 테스트
+├── elk/
+│   ├── filebeat/
+│   │   └── filebeat.yml             # Docker 컨테이너 로그 수집 → Logstash
+│   └── logstash/
+│       └── pipeline/
+│           └── logstash.conf        # JSON 파싱, ELK 자체 로그 필터링 → Elasticsearch
 └── frontend/
     └── src/
         ├── App.tsx
